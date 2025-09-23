@@ -3,7 +3,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict
+from typing import Awaitable, Callable, Dict, List
 
 import aiohttp
 from telegram import Message, Chat, constants
@@ -232,6 +232,17 @@ async def start_cmd(update, context):
         "Ок! Дашборд будет поддерживаться автоматически. Закрепите этот пост, если он не закрепился сам.")
 
 
+def attach_update_cycle(
+    app: Application,
+    create_task: Callable[[Awaitable[object]], asyncio.Task[object]] = asyncio.create_task,
+) -> None:
+    async def on_start(application: Application):
+        logger.info("Application post-init: запускаем цикл обновления")
+        create_task(update_cycle(application))
+
+    app.post_init.append(on_start)
+
+
 async def main():
     logger.info("Инициализация приложения")
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID and YT_API_KEY and WHITELIST):
@@ -255,11 +266,7 @@ async def main():
     app.add_handler(CommandHandler("start", start_cmd))
 
     # запускаем фоновую задачу после старта бота
-    async def on_start(_: Application):
-        logger.info("Application post-init: запускаем цикл обновления")
-        asyncio.create_task(update_cycle(app))
-
-    app.post_init = on_start
+    attach_update_cycle(app)
     await app.initialize()
     await app.start()
     try:
