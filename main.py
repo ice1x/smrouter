@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+import html
 from datetime import datetime, timezone
 from typing import List, Dict
 
@@ -94,11 +95,22 @@ async def collect_whitelist_state() -> dict:
     return result
 
 
+def _escape_html(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def build_live_notification_text(title: str, ch_title: str, url: str) -> str:
+    safe_title = _escape_html(title)
+    safe_channel = _escape_html(ch_title)
+    safe_url = _escape_html(url)
+    return f"🔴 <b>LIVE</b>: <a href=\"{safe_url}\">{safe_title}</a>\n<i>{safe_channel}</i>"
+
+
 def build_dashboard_text(state: dict) -> str:
     """Формирует текст поста канала."""
     now = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-    lines = []
-    lines.append("🎥 **Прямо сейчас в эфире**")
+    lines: List[str] = []
+    lines.append("🎥 <b>Прямо сейчас в эфире</b>")
     if state["live"]:
         for it in state["live"]:
             vid = it["id"]["videoId"]
@@ -106,12 +118,16 @@ def build_dashboard_text(state: dict) -> str:
             title = sn["title"]
             ch_title = sn.get("channelTitle", "Channel")
             url = f"{YOUTUBE_VID_URL}{vid}"
-            lines.append(f"• [{title}]({url}) — _{ch_title}_")
+            safe_title = _escape_html(title)
+            safe_channel = _escape_html(ch_title)
+            safe_url = _escape_html(url)
+            lines.append(f"• <a href=\"{safe_url}\">{safe_title}</a> — <i>{safe_channel}</i>")
     else:
         lines.append("— (пусто)")
 
     if SHOW_UPCOMING:
-        lines.append("\n⏳ **Скоро начнутся**")
+        lines.append("")
+        lines.append("⏳ <b>Скоро начнутся</b>")
         if state["upcoming"]:
             for it in state["upcoming"]:
                 vid = it["id"]["videoId"]
@@ -119,11 +135,15 @@ def build_dashboard_text(state: dict) -> str:
                 title = sn["title"]
                 ch_title = sn.get("channelTitle", "Channel")
                 url = f"{YOUTUBE_VID_URL}{vid}"
-                lines.append(f"• [{title}]({url}) — _{ch_title}_")
+                safe_title = _escape_html(title)
+                safe_channel = _escape_html(ch_title)
+                safe_url = _escape_html(url)
+                lines.append(f"• <a href=\"{safe_url}\">{safe_title}</a> — <i>{safe_channel}</i>")
         else:
             lines.append("— (ничего в ближайшее время)")
 
-    lines.append(f"\n_обновлено: {now}_")
+    lines.append("")
+    lines.append(f"<i>обновлено: {_escape_html(now)}</i>")
     return "\n".join(lines)
 
 
@@ -141,7 +161,7 @@ async def ensure_dashboard(app: Application) -> Message:
                 chat_id=TELEGRAM_CHANNEL_ID,
                 message_id=dashboard_message_id,
                 text="инициализация…",
-                parse_mode=constants.ParseMode.MARKDOWN,
+                parse_mode=constants.ParseMode.HTML,
                 disable_web_page_preview=True,
             )
             return msg
@@ -154,7 +174,7 @@ async def ensure_dashboard(app: Application) -> Message:
     msg = await app.bot.send_message(
         chat_id=TELEGRAM_CHANNEL_ID,
         text="инициализация…",
-        parse_mode=constants.ParseMode.MARKDOWN,
+        parse_mode=constants.ParseMode.HTML,
         disable_web_page_preview=True,
     )
     dashboard_message_id = msg.message_id
@@ -189,11 +209,11 @@ async def publish_new_lives_if_any(app: Application, state: dict):
             title = sn["title"]
             ch_title = sn.get("channelTitle", "Channel")
             url = f"{YOUTUBE_VID_URL}{vid}"
-            text = f"🔴 **LIVE**: [{title}]({url})\n_{ch_title}_"
+            text = build_live_notification_text(title, ch_title, url)
             await app.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 text=text,
-                parse_mode=constants.ParseMode.MARKDOWN,
+                parse_mode=constants.ParseMode.HTML,
                 disable_web_page_preview=False,
             )
     last_seen_live_ids = current_ids
@@ -213,7 +233,7 @@ async def update_cycle(app: Application):
                 chat_id=TELEGRAM_CHANNEL_ID,
                 message_id=msg.message_id,
                 text=text,
-                parse_mode=constants.ParseMode.MARKDOWN,
+                parse_mode=constants.ParseMode.HTML,
                 disable_web_page_preview=True,
             )
             await publish_new_lives_if_any(app, state)
