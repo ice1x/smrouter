@@ -69,8 +69,8 @@ from main import attach_update_cycle
 
 
 class DummyApp:
-    def __init__(self):
-        self.post_init = []
+    def __init__(self, post_init=None):
+        self.post_init = post_init
 
 
 def test_attach_update_cycle_registers_post_init_and_schedules(caplog):
@@ -82,6 +82,7 @@ def test_attach_update_cycle_registers_post_init_and_schedules(caplog):
 
     with caplog.at_level(logging.INFO):
         attach_update_cycle(app, create_task=fake_create_task)
+        assert isinstance(app.post_init, list)
         assert len(app.post_init) == 1
         on_start = app.post_init[0]
         asyncio.run(on_start(app))
@@ -95,3 +96,16 @@ def test_attach_update_cycle_registers_post_init_and_schedules(caplog):
     assert frame.f_locals.get("app") is app
     assert "Application post-init: запускаем цикл обновления" in caplog.text
     coro.close()
+
+
+def test_attach_update_cycle_preserves_existing_callbacks():
+    def existing_callback(app):
+        raise RuntimeError("should not run in test")
+
+    existing_list = [existing_callback]
+    app = DummyApp(post_init=list(existing_list))
+
+    attach_update_cycle(app)
+
+    assert app.post_init[:1] == existing_list
+    assert callable(app.post_init[1])

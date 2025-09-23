@@ -240,7 +240,14 @@ def attach_update_cycle(
         logger.info("Application post-init: запускаем цикл обновления")
         create_task(update_cycle(application))
 
-    app.post_init.append(on_start)
+    callbacks = getattr(app, "post_init", None)
+    if callbacks is None:
+        app.post_init = [on_start]
+    else:
+        try:
+            callbacks.append(on_start)
+        except AttributeError:
+            app.post_init = [*callbacks, on_start]
 
 
 async def main():
