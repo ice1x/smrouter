@@ -3,7 +3,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict
+from typing import Awaitable, Callable, List, Dict
 
 import aiohttp
 from telegram import Message, Chat, constants
@@ -232,6 +232,35 @@ async def start_cmd(update, context):
         "Ок! Дашборд будет поддерживаться автоматически. Закрепите этот пост, если он не закрепился сам.")
 
 
+PostInitCallback = Callable[[Application], Awaitable[None]]
+
+
+def register_post_init_hook(app: Application, callback: PostInitCallback) -> None:
+    """Регистрирует ``callback`` в контейнере ``Application.post_init``.
+
+    У ``python-telegram-bot`` ``post_init`` хранит ``CallbackList``. Если пользовательское
+    приложение заменило его на ``None`` или обычный список, восстановим подходящий контейнер
+    и зарегистрируем колбэк через его API.
+    """
+
+    post_init_container = app.post_init
+    if post_init_container is None:
+        from telegram.ext._callbackdatacache import CallbackList  # type: ignore[attr-defined]
+
+        post_init_container = CallbackList()
+        app.post_init = post_init_container
+    elif isinstance(post_init_container, list):
+        # Setter ``Application.post_init =`` преобразует список в ``CallbackList``.
+        app.post_init = post_init_container
+        post_init_container = app.post_init
+
+    add_method = getattr(post_init_container, "add", None)
+    if callable(add_method):
+        add_method(callback)
+    else:
+        post_init_container.append(callback)
+
+
 async def main():
     logger.info("Инициализация приложения")
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID and YT_API_KEY and WHITELIST):
@@ -259,7 +288,7 @@ async def main():
         logger.info("Application post-init: запускаем цикл обновления")
         asyncio.create_task(update_cycle(app))
 
-    app.post_init = on_start
+    register_post_init_hook(app, on_start)
     await app.initialize()
     await app.start()
     try:
