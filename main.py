@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import os
-from typing import Dict
+from contextlib import suppress
+from typing import Awaitable, Callable, Dict
 
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -86,7 +87,7 @@ async def main() -> None:
 
     failure_state = {"count": 0}
 
-    async def pipeline_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def run_pipeline_iteration(stop_application: Callable[[], Awaitable[None]]) -> None:
         try:
             await pipeline.run_once()
             failure_state["count"] = 0
@@ -101,13 +102,42 @@ async def main() -> None:
             )
             if failure_state["count"] >= MAX_CONSECUTIVE_FAILURES:
                 logger.critical("Maximum failure threshold reached, shutting down application")
-                await context.application.stop()
+                await stop_application()
 
-    if application.job_queue is None:
-        raise RuntimeError("Application was created without a JobQueue; cannot schedule pipeline")
+    if application.job_queue is not None:
+        async def pipeline_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+            await run_pipeline_iteration(lambda: context.application.stop())
 
-    application.job_queue.run_repeating(pipeline_job, interval=POLL_SECONDS, first=0)
-    await application.run_polling()
+        application.job_queue.run_repeating(pipeline_job, interval=POLL_SECONDS, first=0)
+        await application.run_polling()
+        return
+
+    logger.warning("Application has no JobQueue; falling back to asyncio-based scheduler")
+
+    stop_event = asyncio.Event()
+
+    async def stop_application() -> None:
+        stop_event.set()
+        await application.stop()
+
+    async def scheduler_loop() -> None:
+        try:
+            while not stop_event.is_set():
+                await run_pipeline_iteration(stop_application)
+                if stop_event.is_set():
+                    break
+                await asyncio.sleep(POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+    scheduler_task = asyncio.create_task(scheduler_loop())
+    try:
+        await application.run_polling()
+    finally:
+        stop_event.set()
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 if __name__ == "__main__":
