@@ -10,14 +10,21 @@ from genti.exceptions import FatalPipelineError
 from genti.models import DashboardUpdate, LiveFeedState
 
 
+class DummyUser:
+    def __init__(self, user_id: int):
+        self.id = user_id
+
+
 class DummyMessage:
-    def __init__(self, message_id: int):
+    def __init__(self, message_id: int, *, from_user: DummyUser | None = None):
         self.message_id = message_id
+        self.from_user = from_user
 
 
 class DummyChat:
-    def __init__(self, chat_id: int | str):
+    def __init__(self, chat_id: int | str, *, pinned_message: DummyMessage | None = None):
         self.id = chat_id
+        self.pinned_message = pinned_message
 
 
 class DummyBot:
@@ -28,6 +35,8 @@ class DummyBot:
         edit_exception: Exception | None = None,
         get_chat_exception: Exception | None = None,
         chat_id: int | str = 123,
+        bot_id: int = 999,
+        pinned_message: DummyMessage | None = None,
     ):
         self._send_exception = send_exception
         self._edit_exception = edit_exception
@@ -37,12 +46,14 @@ class DummyBot:
         self.pinned = []
         self.get_chat_called = 0
         self._chat_id = chat_id
+        self._pinned_message = pinned_message
+        self.id = bot_id
 
     async def get_chat(self, **kwargs):
         self.get_chat_called += 1
         if self._get_chat_exception is not None:
             raise self._get_chat_exception
-        return DummyChat(self._chat_id)
+        return DummyChat(self._chat_id, pinned_message=self._pinned_message)
 
     async def send_message(self, **kwargs):
         if self._send_exception is not None:
@@ -114,3 +125,24 @@ async def test_send_message_propagates_channel_error():
 
     with pytest.raises(FatalPipelineError, match="Телеграм-канал недоступен"):
         await connector._send_message("payload")
+
+
+@pytest.mark.asyncio
+async def test_reuses_existing_pinned_dashboard():
+    pinned = DummyMessage(message_id=42, from_user=DummyUser(user_id=1))
+    bot = DummyBot(pinned_message=pinned, bot_id=1)
+    application = SimpleNamespace(bot=bot)
+    connector = TelegramDashboardConnector(application=application, channel_id="123")
+
+    update = DashboardUpdate(
+        dashboard_text="новый текст",
+        new_live_messages=[],
+        state=LiveFeedState(live=[], upcoming=[]),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    await connector.push(update)
+
+    assert not bot.sent_messages
+    assert bot.edited_messages
+    assert bot.edited_messages[0]["message_id"] == 42
