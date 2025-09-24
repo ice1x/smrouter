@@ -8,6 +8,7 @@ from telegram import Message, constants
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application
 
+from genti.exceptions import FatalPipelineError
 from genti.models import DashboardUpdate
 
 
@@ -62,7 +63,7 @@ class TelegramDashboardConnector:
             )
         except BadRequest as exc:
             if exc.message and "chat not found" in exc.message.lower():
-                raise RuntimeError(
+                raise FatalPipelineError(
                     "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
                 ) from exc
             raise
@@ -105,7 +106,7 @@ class TelegramDashboardConnector:
             )
         except BadRequest as exc:
             if exc.message and "chat not found" in exc.message.lower():
-                raise RuntimeError(
+                raise FatalPipelineError(
                     "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
                 ) from exc
             raise

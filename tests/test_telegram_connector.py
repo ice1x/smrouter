@@ -6,6 +6,7 @@ pytest.importorskip("telegram")
 from telegram.error import BadRequest
 
 from genti.connectors.telegram import TelegramDashboardConnector
+from genti.exceptions import FatalPipelineError
 from genti.models import DashboardUpdate, LiveFeedState
 
 
@@ -51,7 +52,7 @@ async def test_dashboard_creation_raises_clear_error_on_missing_channel():
         generated_at=datetime.now(timezone.utc),
     )
 
-    with pytest.raises(RuntimeError, match="Телеграм-канал недоступен"):
+    with pytest.raises(FatalPipelineError, match="Телеграм-канал недоступен"):
         await connector.push(update)
 
 
@@ -76,5 +77,5 @@ async def test_send_message_propagates_channel_error():
     application = SimpleNamespace(bot=bot)
     connector = TelegramDashboardConnector(application=application, channel_id="123")
 
-    with pytest.raises(RuntimeError, match="Телеграм-канал недоступен"):
+    with pytest.raises(FatalPipelineError, match="Телеграм-канал недоступен"):
         await connector._send_message("payload")

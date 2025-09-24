@@ -11,6 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from genti.connectors.telegram import TelegramDashboardConnector
 from genti.connectors.youtube import YouTubeLiveConnector
+from genti.exceptions import FatalPipelineError
 from genti.platform import Pipeline, PipelineConfig
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 
@@ -100,6 +101,9 @@ async def main() -> None:
             failure_state["count"] = 0
         except asyncio.CancelledError:
             raise
+        except FatalPipelineError:
+            logger.exception("Fatal pipeline error encountered; requesting shutdown")
+            await stop_application()
         except Exception:
             failure_state["count"] += 1
             logger.exception(

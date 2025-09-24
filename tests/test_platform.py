@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from genti.exceptions import FatalPipelineError
 from genti.platform import Pipeline, PipelineConfig
 
 
@@ -30,6 +31,11 @@ class DummySink:
 
     async def push(self, data):
         self.payloads.append(data)
+
+
+class FatalSink:
+    async def push(self, data):
+        raise FatalPipelineError("fatal")
 
 
 def test_pipeline_run_once_executes_all_stages():
@@ -63,4 +69,20 @@ def test_pipeline_run_forever_raises_after_max_failures():
         await pipeline.run_forever(stop_event=stop_event)
 
     with pytest.raises(RuntimeError):
+        asyncio.run(runner())
+
+
+def test_pipeline_run_forever_bubbles_fatal_error():
+    pipeline = Pipeline(
+        DummySource(),
+        DummyTransformation(),
+        FatalSink(),
+        PipelineConfig(poll_interval=0.01, max_consecutive_failures=5),
+    )
+
+    async def runner():
+        stop_event = asyncio.Event()
+        await pipeline.run_forever(stop_event=stop_event)
+
+    with pytest.raises(FatalPipelineError):
         asyncio.run(runner())

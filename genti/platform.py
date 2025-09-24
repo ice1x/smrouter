@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Generic, Optional, Protocol, TypeVar
 
 
+from genti.exceptions import FatalPipelineError
+
+
 TSource = TypeVar("TSource")
 TResult = TypeVar("TResult")
 
@@ -78,6 +81,10 @@ class Pipeline(Generic[TSource, TResult]):
                 consecutive_failures = 0
                 self._logger.info("Pipeline iteration finished successfully")
             except asyncio.CancelledError:
+                raise
+            except FatalPipelineError:
+                consecutive_failures = 0
+                self._logger.critical("Fatal pipeline error encountered; aborting")
                 raise
             except Exception:  # pragma: no cover - defensive catch for runtime stability
                 consecutive_failures += 1
