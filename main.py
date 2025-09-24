@@ -1,6 +1,7 @@
 # file: tg_youtube_live_feed.py
 import os
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -386,13 +387,11 @@ async def main():
     app.add_handler(CommandHandler("start", start_cmd))
 
     # запускаем фоновую задачу после старта бота
-    async def on_start(_: Application):
-        logger.info("Application post-init: запускаем цикл обновления")
-        asyncio.create_task(update_cycle(app))
-
-    register_post_init_hook(app, on_start)
+    register_post_init_hook(app, lambda _: None)
     await app.initialize()
     await app.start()
+    logger.info("Application post-init: запускаем цикл обновления")
+    update_task = asyncio.create_task(update_cycle(app))
     try:
         # await app.updater.start_polling(allowed_updates=constants.Update.ALL_TYPES)
         logger.info("Запускаем polling Telegram")
@@ -401,6 +400,10 @@ async def main():
         await asyncio.Event().wait()
     finally:
         logger.info("Останавливаем приложение")
+        await app.updater.stop()
+        update_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await update_task
         await app.stop()
         await app.shutdown()
 
