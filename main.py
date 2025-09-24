@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import signal
 from contextlib import suppress
 from typing import Awaitable, Callable, Dict
 
@@ -86,6 +87,12 @@ async def main() -> None:
     )
 
     failure_state = {"count": 0}
+    stop_event = asyncio.Event()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with suppress(NotImplementedError):
+            loop.add_signal_handler(sig, stop_event.set)
 
     async def run_pipeline_iteration(stop_application: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -104,40 +111,54 @@ async def main() -> None:
                 logger.critical("Maximum failure threshold reached, shutting down application")
                 await stop_application()
 
+    async def request_application_stop() -> None:
+        if not stop_event.is_set():
+            stop_event.set()
+
+    scheduler_task = None
+
     if application.job_queue is not None:
         async def pipeline_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-            await run_pipeline_iteration(lambda: context.application.stop())
+            await run_pipeline_iteration(request_application_stop)
 
         application.job_queue.run_repeating(pipeline_job, interval=POLL_SECONDS, first=0)
-        await application.run_polling()
-        return
+    else:
+        logger.warning("Application has no JobQueue; falling back to asyncio-based scheduler")
 
-    logger.warning("Application has no JobQueue; falling back to asyncio-based scheduler")
+        async def scheduler_loop() -> None:
+            try:
+                while not stop_event.is_set():
+                    await run_pipeline_iteration(request_application_stop)
+                    if stop_event.is_set():
+                        break
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=POLL_SECONDS)
+                    except asyncio.TimeoutError:
+                        continue
+            except asyncio.CancelledError:
+                raise
 
-    stop_event = asyncio.Event()
+        scheduler_task = asyncio.create_task(scheduler_loop())
 
-    async def stop_application() -> None:
-        stop_event.set()
-        await application.stop()
-
-    async def scheduler_loop() -> None:
-        try:
-            while not stop_event.is_set():
-                await run_pipeline_iteration(stop_application)
-                if stop_event.is_set():
-                    break
-                await asyncio.sleep(POLL_SECONDS)
-        except asyncio.CancelledError:
-            raise
-
-    scheduler_task = asyncio.create_task(scheduler_loop())
     try:
-        await application.run_polling()
+        await application.initialize()
+        await application.start()
+
+        if application.updater is not None:
+            await application.updater.start_polling()
+
+        await stop_event.wait()
     finally:
-        stop_event.set()
-        scheduler_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await scheduler_task
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler_task
+
+        if application.updater is not None:
+            await application.updater.stop()
+
+        await application.stop()
+        await application.shutdown()
 
 
 if __name__ == "__main__":
