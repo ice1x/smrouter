@@ -3,6 +3,10 @@ import asyncio
 import pytest
 
 pytest.importorskip("aiohttp")
+from yarl import URL
+
+
+import aiohttp
 
 from genti.connectors.youtube import YouTubeLiveConnector
 from genti.models import LiveFeedState, Video
@@ -45,3 +49,40 @@ def test_youtube_connector_deduplicates(monkeypatch):
     assert isinstance(state, LiveFeedState)
     assert [video.video_id for video in state.live] == ["v1"]
     assert [video.video_id for video in state.upcoming] == ["v2"]
+
+
+class ForbiddenResponse:
+    def __init__(self):
+        self.status = 403
+        self.reason = "Forbidden"
+        self.url = "https://example.test"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self):
+        return {}
+
+    def raise_for_status(self):
+        request_info = aiohttp.RequestInfo(URL(self.url), "GET", headers={}, real_url=URL(self.url))
+        raise aiohttp.ClientResponseError(request_info, (), status=403, message="Forbidden")
+
+
+class ForbiddenSession:
+    def get(self, *args, **kwargs):
+        return ForbiddenResponse()
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_handles_forbidden(caplog):
+    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
+
+    caplog.set_level("ERROR")
+
+    result = await connector._search(ForbiddenSession(), "chan", "live")
+
+    assert result == []
+    assert any("YouTube search failed with 403" in record.getMessage() for record in caplog.records)

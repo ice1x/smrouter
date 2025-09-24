@@ -94,6 +94,11 @@ class YouTubeLiveConnector:
         except asyncio.TimeoutError:
             self._logger.warning("YouTube search timed out: channel=%s type=%s", channel_id, event_type)
             return []
+        except aiohttp.ClientResponseError as exc:
+            self._logger.error(
+                "YouTube search failed with %s for channel=%s type=%s", exc.status, channel_id, event_type
+            )
+            return []
         except aiohttp.ClientError:
             self._logger.exception("YouTube search failed: channel=%s type=%s", channel_id, event_type)
             return []

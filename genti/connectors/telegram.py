@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 from telegram import Message, constants
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application
 
 from genti.models import DashboardUpdate
@@ -53,12 +53,19 @@ class TelegramDashboardConnector:
                 )
                 self._dashboard_message_id = None
 
-        message = await self._application.bot.send_message(
-            chat_id=self._channel_id,
-            text="инициализация…",
-            parse_mode=self._parse_mode,
-            disable_web_page_preview=True,
-        )
+        try:
+            message = await self._application.bot.send_message(
+                chat_id=self._channel_id,
+                text="инициализация…",
+                parse_mode=self._parse_mode,
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            if exc.message and "chat not found" in exc.message.lower():
+                raise RuntimeError(
+                    "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
+                ) from exc
+            raise
         self._dashboard_message_id = message.message_id
         await self._pin_dashboard()
         return message
@@ -74,18 +81,31 @@ class TelegramDashboardConnector:
             self._logger.warning("Unable to pin dashboard message", exc_info=True)
 
     async def _edit_dashboard(self, message: Message, text: str) -> None:
-        await self._application.bot.edit_message_text(
-            chat_id=self._channel_id,
-            message_id=message.message_id,
-            text=text,
-            parse_mode=self._parse_mode,
-            disable_web_page_preview=True,
-        )
+        try:
+            await self._application.bot.edit_message_text(
+                chat_id=self._channel_id,
+                message_id=message.message_id,
+                text=text,
+                parse_mode=self._parse_mode,
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            if exc.message and "message is not modified" in exc.message.lower():
+                self._logger.debug("Dashboard message unchanged; skipping edit")
+                return
+            raise
 
     async def _send_message(self, text: str) -> None:
-        await self._application.bot.send_message(
-            chat_id=self._channel_id,
-            text=text,
-            parse_mode=self._parse_mode,
-            disable_web_page_preview=False,
-        )
+        try:
+            await self._application.bot.send_message(
+                chat_id=self._channel_id,
+                text=text,
+                parse_mode=self._parse_mode,
+                disable_web_page_preview=False,
+            )
+        except BadRequest as exc:
+            if exc.message and "chat not found" in exc.message.lower():
+                raise RuntimeError(
+                    "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
+                ) from exc
+            raise
