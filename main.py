@@ -35,29 +35,41 @@ PostInitHook = Callable[[Application], Awaitable[None]]
 
 
 def _build_post_init_container(app: Application):
-    """Return a freshly constructed post_init callback container."""
+    """Return a freshly constructed post_init callback container and attr name.
+
+    The return value is a tuple ``(container, attr_name)``. ``attr_name`` may be
+    ``None`` if we cannot determine which attribute hosts the container on
+    ``Application`` instances.
+    """
+
+    def _make_instance(container_type):
+        ctor_attempts = [
+            ((), {}),
+            ((), {"callbacks": []}),
+        ]
+        cache = getattr(app, "_callback_data_cache", None)
+        if cache is not None:
+            ctor_attempts.insert(0, ((cache,), {}))
+            ctor_attempts.append(((), {"callbackdatacache": cache}))
+            ctor_attempts.append(((), {"callback_data_cache": cache}))
+
+        for args, kwargs in ctor_attempts:
+            try:
+                return container_type(*args, **kwargs)
+            except TypeError:
+                continue
+        try:
+            return container_type()
+        except TypeError:
+            return None
+
     try:
         from telegram.ext._callbacklist import CallbackList  # type: ignore
     except ImportError:  # pragma: no cover - compatibility with older PTB versions
         CallbackList = None  # type: ignore[assignment]
 
-    if CallbackList is not None:
-        cache = getattr(app, "_callback_data_cache", None)
-        candidates = [
-            ((cache,), {}),
-            ((), {}),
-            ((), {"callbackdatacache": cache}),
-            ((), {"callback_data_cache": cache}),
-        ]
-        for args, kwargs in candidates:
-            try:
-                return CallbackList(*args, **kwargs)
-            except TypeError:
-                continue
-        try:
-            return CallbackList()  # type: ignore[call-arg]
-        except TypeError:
-            pass
+    container_type = CallbackList
+    attr_name = None
 
     try:
         probe_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN or "123:TESTTOKEN").build()
@@ -65,19 +77,32 @@ def _build_post_init_container(app: Application):
         probe_app = None
 
     if probe_app is not None:
-        sample_container = getattr(probe_app, "post_init", None)
-        container_type = type(sample_container)
-        for ctor_kwargs in ({}, {"callbacks": []}):
-            try:
-                return container_type(**ctor_kwargs)  # type: ignore[misc]
-            except TypeError:
-                continue
         try:
-            return container_type()  # type: ignore[call-arg]
-        except TypeError:
-            pass
+            sample_container = probe_app.post_init
+        except AttributeError:
+            sample_container = None
 
-    return []
+        if sample_container is not None:
+            container_type = type(sample_container)
+
+            for name in dir(probe_app):
+                if name.startswith("__"):
+                    continue
+                try:
+                    if getattr(probe_app, name) is sample_container:
+                        attr_name = name
+                        break
+                except AttributeError:
+                    continue
+
+    if container_type is None:
+        return [], None
+
+    container = _make_instance(container_type)
+    if container is None:
+        return [], attr_name
+
+    return container, attr_name
 
 
 def register_post_init_hook(app: Application, callback: PostInitHook) -> None:
@@ -86,10 +111,29 @@ def register_post_init_hook(app: Application, callback: PostInitHook) -> None:
     container = getattr(app, "post_init", None)
     if container is None:
         container = getattr(app, "_post_init", None)
-    if container is None:
-        container = _build_post_init_container(app)
-        setattr(app, "_post_init", container)
-        container = getattr(app, "_post_init")
+
+    assigned = container is not None
+    if not assigned:
+        container, suggested_attr = _build_post_init_container(app)
+
+        candidate_attrs = [suggested_attr, "post_init", "_post_init"]
+        for attr_name in filter(None, candidate_attrs):
+            for setter in (setattr, object.__setattr__):
+                try:
+                    setter(app, attr_name, container)
+                except AttributeError:
+                    continue
+                else:
+                    maybe_container = getattr(app, attr_name, None)
+                    if maybe_container is not None:
+                        container = maybe_container
+                        assigned = True
+                        break
+            if assigned:
+                break
+
+    if not assigned:
+        raise RuntimeError("Unable to attach post_init callback container")
 
     for method_name in ("register", "add", "append"):
         handler = getattr(container, method_name, None)
