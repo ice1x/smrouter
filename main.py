@@ -24,6 +24,7 @@ YT_API_KEY = os.getenv("YT_API_KEY")
 WHITELIST = [c.strip() for c in os.getenv("WHITELIST", "").split(",") if c.strip()]
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))  # как часто опрашивать
 SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "1") == "1"  # показывать ли «скоро»
+MAX_CONSECUTIVE_FAILURES = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "4"))
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VID_URL = "https://www.youtube.com/watch?v="
@@ -328,6 +329,7 @@ async def update_cycle(app: Application):
     """Основной цикл обновления."""
     logger.info("Старт цикла обновления")
     msg = await ensure_dashboard(app)
+    consecutive_failures = 0
     while True:
         try:
             logger.debug("Начинаем новый проход цикла обновления")
@@ -343,19 +345,20 @@ async def update_cycle(app: Application):
             )
             await publish_new_lives_if_any(app, state)
             logger.info("Цикл обновления успешно завершён")
+            consecutive_failures = 0
         except Exception as e:
-            logger.exception("Сбой при обновлении дашборда")
-            try:
-                error_text = f"⚠️ ошибка обновления: {e}"
-                logger.error(
-                    "Отправляем сообщение об ошибке в канал: channel_id=%s error=%s text=%s",
-                    TELEGRAM_CHANNEL_ID,
-                    e,
-                    error_text,
+            consecutive_failures += 1
+            logger.exception(
+                "Сбой при обновлении дашборда (попытка %d из %d)",
+                consecutive_failures,
+                MAX_CONSECUTIVE_FAILURES,
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.critical(
+                    "Превышено допустимое количество последовательных ошибок (%d). Завершаем работу.",
+                    MAX_CONSECUTIVE_FAILURES,
                 )
-                await app.bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=error_text)
-            except Exception:
-                logger.exception("Не удалось отправить сообщение об ошибке в канал")
+                raise
         await asyncio.sleep(POLL_SECONDS)
 
 
@@ -392,19 +395,37 @@ async def main():
     await app.start()
     logger.info("Application post-init: запускаем цикл обновления")
     update_task = asyncio.create_task(update_cycle(app))
+    stop_event = asyncio.Event()
+
+    def _on_update_task_done(task: asyncio.Task) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.critical("Фоновая задача обновления завершилась с ошибкой", exc_info=exc)
+            stop_event.set()
+
+    update_task.add_done_callback(_on_update_task_done)
     try:
         # await app.updater.start_polling(allowed_updates=constants.Update.ALL_TYPES)
         logger.info("Запускаем polling Telegram")
         await app.updater.start_polling()
         # бот используется лишь для отправки/редактирования; polling нужен, чтобы /start работал (необяз.)
-        await asyncio.Event().wait()
+        await stop_event.wait()
+        if update_task.done():
+            exc = update_task.exception()
+            if exc is not None:
+                raise exc
     finally:
         logger.info("Останавливаем приложение")
         await app.updater.stop()
-        update_task.cancel()
+        if not update_task.done():
+            update_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await update_task
-        await app.stop()
+        with contextlib.suppress(asyncio.CancelledError):
+            await app.stop()
         await app.shutdown()
 
 
