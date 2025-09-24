@@ -1,0 +1,51 @@
+import asyncio
+
+import pytest
+
+pytest.importorskip("telegram")
+
+from genti.models import LiveFeedState, Video
+from genti.transformations.live_dashboard import LiveDashboardTransformation
+
+
+def test_transformation_builds_dashboard_and_detects_new_lives():
+    transformation = LiveDashboardTransformation(show_upcoming=True)
+    state = LiveFeedState(
+        live=[
+            Video(
+                video_id="vid1",
+                title="Title_1 [test]",
+                channel_title="Ch*1*",
+                url="https://youtu.be/vid1",
+            )
+        ],
+        upcoming=[
+            Video(
+                video_id="vid2",
+                title="Another",
+                channel_title="Channel",
+                url="https://youtu.be/vid2",
+            )
+        ],
+    )
+
+    async def run_updates():
+        first = await transformation.transform(state)
+        second = await transformation.transform(state)
+        return first, second
+
+    first_update, second_update = asyncio.run(run_updates())
+
+    assert "Прямо сейчас" in first_update.dashboard_text
+    assert "Title\\_1" in first_update.dashboard_text
+    assert len(first_update.new_live_messages) == 1
+    assert len(second_update.new_live_messages) == 0
+
+
+def test_transformation_handles_empty_lists():
+    transformation = LiveDashboardTransformation(show_upcoming=False)
+    state = LiveFeedState(live=[], upcoming=[])
+
+    update = asyncio.run(transformation.transform(state))
+    assert "(пусто)" in update.dashboard_text
+    assert update.new_live_messages == []
