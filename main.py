@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import List, Dict
 
@@ -28,6 +29,122 @@ YOUTUBE_VID_URL = "https://www.youtube.com/watch?v="
 
 dashboard_message_id: int | None = None  # в памяти; можно вынести в файл/БД для сохранения между перезапусками
 last_seen_live_ids: set[str] = set()  # чтобы по желанию публиковать отдельные посты о «новых» лайвах
+
+
+PostInitHook = Callable[[Application], Awaitable[None]]
+
+
+def _build_post_init_container(app: Application):
+    """Return a freshly constructed post_init callback container and attr name.
+
+    The return value is a tuple ``(container, attr_name)``. ``attr_name`` may be
+    ``None`` if we cannot determine which attribute hosts the container on
+    ``Application`` instances.
+    """
+
+    def _make_instance(container_type):
+        ctor_attempts = [
+            ((), {}),
+            ((), {"callbacks": []}),
+        ]
+        cache = getattr(app, "_callback_data_cache", None)
+        if cache is not None:
+            ctor_attempts.insert(0, ((cache,), {}))
+            ctor_attempts.append(((), {"callbackdatacache": cache}))
+            ctor_attempts.append(((), {"callback_data_cache": cache}))
+
+        for args, kwargs in ctor_attempts:
+            try:
+                return container_type(*args, **kwargs)
+            except TypeError:
+                continue
+        try:
+            return container_type()
+        except TypeError:
+            return None
+
+    try:
+        from telegram.ext._callbacklist import CallbackList  # type: ignore
+    except ImportError:  # pragma: no cover - compatibility with older PTB versions
+        CallbackList = None  # type: ignore[assignment]
+
+    container_type = CallbackList
+    attr_name = None
+
+    try:
+        probe_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN or "123:TESTTOKEN").build()
+    except Exception:
+        probe_app = None
+
+    if probe_app is not None:
+        try:
+            sample_container = probe_app.post_init
+        except AttributeError:
+            sample_container = None
+
+        if sample_container is not None:
+            container_type = type(sample_container)
+
+            for name in dir(probe_app):
+                if name.startswith("__"):
+                    continue
+                try:
+                    if getattr(probe_app, name) is sample_container:
+                        attr_name = name
+                        break
+                except AttributeError:
+                    continue
+
+    if container_type is None:
+        return [], None
+
+    container = _make_instance(container_type)
+    if container is None:
+        return [], attr_name
+
+    return container, attr_name
+
+
+def register_post_init_hook(app: Application, callback: PostInitHook) -> None:
+    """Ensure *callback* runs during ``Application`` post-initialization."""
+
+    container = getattr(app, "post_init", None)
+    if container is None:
+        container = getattr(app, "_post_init", None)
+
+    assigned = container is not None
+    if not assigned:
+        container, suggested_attr = _build_post_init_container(app)
+
+        candidate_attrs = [suggested_attr, "post_init", "_post_init"]
+        for attr_name in filter(None, candidate_attrs):
+            for setter in (setattr, object.__setattr__):
+                try:
+                    setter(app, attr_name, container)
+                except AttributeError:
+                    continue
+                else:
+                    maybe_container = getattr(app, attr_name, None)
+                    if maybe_container is not None:
+                        container = maybe_container
+                        assigned = True
+                        break
+            if assigned:
+                break
+
+    if not assigned:
+        raise RuntimeError("Unable to attach post_init callback container")
+
+    for method_name in ("register", "add", "append"):
+        handler = getattr(container, method_name, None)
+        if callable(handler):
+            handler(callback)
+            break
+    else:
+        if isinstance(container, list):
+            container.append(callback)
+        else:
+            raise RuntimeError("Unsupported post_init container type")
 
 
 async def yt_search(session: aiohttp.ClientSession, channel_id: str, event_type: str) -> List[Dict]:
@@ -259,7 +376,7 @@ async def main():
         logger.info("Application post-init: запускаем цикл обновления")
         asyncio.create_task(update_cycle(app))
 
-    app.post_init = on_start
+    register_post_init_hook(app, on_start)
     await app.initialize()
     await app.start()
     try:
