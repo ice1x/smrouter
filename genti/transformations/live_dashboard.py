@@ -50,7 +50,7 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
 
     def _format_video_list(self, videos: Iterable[Video], *, empty_placeholder: str) -> List[str]:
         if not videos:
-            return [empty_placeholder]
+            return [escape_markdown(empty_placeholder, version=2)]
         formatted: List[str] = []
         for video in videos:
             title = escape_markdown(video.title, version=2)
