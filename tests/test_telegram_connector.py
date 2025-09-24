@@ -15,13 +15,34 @@ class DummyMessage:
         self.message_id = message_id
 
 
+class DummyChat:
+    def __init__(self, chat_id: int | str):
+        self.id = chat_id
+
+
 class DummyBot:
-    def __init__(self, *, send_exception: Exception | None = None, edit_exception: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        send_exception: Exception | None = None,
+        edit_exception: Exception | None = None,
+        get_chat_exception: Exception | None = None,
+        chat_id: int | str = 123,
+    ):
         self._send_exception = send_exception
         self._edit_exception = edit_exception
+        self._get_chat_exception = get_chat_exception
         self.sent_messages = []
         self.edited_messages = []
         self.pinned = []
+        self.get_chat_called = 0
+        self._chat_id = chat_id
+
+    async def get_chat(self, **kwargs):
+        self.get_chat_called += 1
+        if self._get_chat_exception is not None:
+            raise self._get_chat_exception
+        return DummyChat(self._chat_id)
 
     async def send_message(self, **kwargs):
         if self._send_exception is not None:
@@ -41,7 +62,7 @@ class DummyBot:
 
 @pytest.mark.asyncio
 async def test_dashboard_creation_raises_clear_error_on_missing_channel():
-    bot = DummyBot(send_exception=BadRequest("Chat not found"))
+    bot = DummyBot(get_chat_exception=BadRequest("Chat not found"))
     application = SimpleNamespace(bot=bot)
     connector = TelegramDashboardConnector(application=application, channel_id="123")
 
@@ -69,6 +90,20 @@ async def test_edit_dashboard_ignores_message_not_modified(caplog):
     await connector._edit_dashboard(message, "same")
 
     assert any("unchanged" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_resolves_channel_id_only_once():
+    bot = DummyBot(chat_id=-100)
+    application = SimpleNamespace(bot=bot)
+    connector = TelegramDashboardConnector(application=application, channel_id="@demo")
+    connector._dashboard_message_id = 1
+
+    message = DummyMessage(message_id=1)
+    await connector._edit_dashboard(message, "text")
+    await connector._send_message("payload")
+
+    assert bot.get_chat_called == 1
 
 
 @pytest.mark.asyncio
