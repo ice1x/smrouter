@@ -307,6 +307,13 @@ async def publish_new_lives_if_any(app: Application, state: dict):
             ch_title = sn.get("channelTitle", "Channel")
             url = f"{YOUTUBE_VID_URL}{vid}"
             text = f"🔴 **LIVE**: [{title}]({url})\n_{ch_title}_"
+            logger.info(
+                "Отправляем уведомление о новом live: video_id=%s channel=%s title=%s text=%s",
+                vid,
+                ch_title,
+                title,
+                text,
+            )
             await app.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 text=text,
@@ -338,7 +345,14 @@ async def update_cycle(app: Application):
         except Exception as e:
             logger.exception("Сбой при обновлении дашборда")
             try:
-                await app.bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=f"⚠️ ошибка обновления: {e}")
+                error_text = f"⚠️ ошибка обновления: {e}"
+                logger.error(
+                    "Отправляем сообщение об ошибке в канал: channel_id=%s error=%s text=%s",
+                    TELEGRAM_CHANNEL_ID,
+                    e,
+                    error_text,
+                )
+                await app.bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=error_text)
             except Exception:
                 logger.exception("Не удалось отправить сообщение об ошибке в канал")
         await asyncio.sleep(POLL_SECONDS)
