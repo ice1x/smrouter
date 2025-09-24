@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import List, Dict
 
@@ -28,6 +29,78 @@ YOUTUBE_VID_URL = "https://www.youtube.com/watch?v="
 
 dashboard_message_id: int | None = None  # в памяти; можно вынести в файл/БД для сохранения между перезапусками
 last_seen_live_ids: set[str] = set()  # чтобы по желанию публиковать отдельные посты о «новых» лайвах
+
+
+PostInitHook = Callable[[Application], Awaitable[None]]
+
+
+def _build_post_init_container(app: Application):
+    """Return a freshly constructed post_init callback container."""
+    try:
+        from telegram.ext._callbacklist import CallbackList  # type: ignore
+    except ImportError:  # pragma: no cover - compatibility with older PTB versions
+        CallbackList = None  # type: ignore[assignment]
+
+    if CallbackList is not None:
+        cache = getattr(app, "_callback_data_cache", None)
+        candidates = [
+            ((cache,), {}),
+            ((), {}),
+            ((), {"callbackdatacache": cache}),
+            ((), {"callback_data_cache": cache}),
+        ]
+        for args, kwargs in candidates:
+            try:
+                return CallbackList(*args, **kwargs)
+            except TypeError:
+                continue
+        try:
+            return CallbackList()  # type: ignore[call-arg]
+        except TypeError:
+            pass
+
+    try:
+        probe_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN or "123:TESTTOKEN").build()
+    except Exception:
+        probe_app = None
+
+    if probe_app is not None:
+        sample_container = getattr(probe_app, "post_init", None)
+        container_type = type(sample_container)
+        for ctor_kwargs in ({}, {"callbacks": []}):
+            try:
+                return container_type(**ctor_kwargs)  # type: ignore[misc]
+            except TypeError:
+                continue
+        try:
+            return container_type()  # type: ignore[call-arg]
+        except TypeError:
+            pass
+
+    return []
+
+
+def register_post_init_hook(app: Application, callback: PostInitHook) -> None:
+    """Ensure *callback* runs during ``Application`` post-initialization."""
+
+    container = getattr(app, "post_init", None)
+    if container is None:
+        container = getattr(app, "_post_init", None)
+    if container is None:
+        container = _build_post_init_container(app)
+        setattr(app, "_post_init", container)
+        container = getattr(app, "_post_init")
+
+    for method_name in ("register", "add", "append"):
+        handler = getattr(container, method_name, None)
+        if callable(handler):
+            handler(callback)
+            break
+    else:
+        if isinstance(container, list):
+            container.append(callback)
+        else:
+            raise RuntimeError("Unsupported post_init container type")
 
 
 async def yt_search(session: aiohttp.ClientSession, channel_id: str, event_type: str) -> List[Dict]:
@@ -259,7 +332,7 @@ async def main():
         logger.info("Application post-init: запускаем цикл обновления")
         asyncio.create_task(update_cycle(app))
 
-    app.post_init = on_start
+    register_post_init_hook(app, on_start)
     await app.initialize()
     await app.start()
     try:
