@@ -8,7 +8,7 @@ from genti.models import LiveFeedState, Video
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 
 
-def test_transformation_builds_dashboard_and_detects_new_lives():
+def test_transformation_builds_dashboard_and_skips_extra_messages():
     transformation = LiveDashboardTransformation(show_upcoming=True)
     state = LiveFeedState(
         live=[
@@ -38,8 +38,8 @@ def test_transformation_builds_dashboard_and_detects_new_lives():
 
     assert "Прямо сейчас" in first_update.dashboard_text
     assert "Title\\_1" in first_update.dashboard_text
-    assert len(first_update.new_live_messages) == 1
-    assert len(second_update.new_live_messages) == 0
+    assert first_update.new_live_messages == []
+    assert second_update.new_live_messages == []
 
 
 def test_transformation_handles_empty_lists():

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, List, Set
+from typing import Iterable, List
 
 from telegram.helpers import escape_markdown
 
@@ -11,19 +11,17 @@ from genti.platform import TransformationStage
 
 
 class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUpdate]):
-    """Render a dashboard summary and detect new live broadcasts."""
+    """Render a dashboard summary with live and upcoming broadcasts."""
 
     def __init__(self, *, show_upcoming: bool = True) -> None:
         self._show_upcoming = show_upcoming
-        self._last_seen_live_ids: Set[str] = set()
 
     async def transform(self, data: LiveFeedState) -> DashboardUpdate:
         dashboard_text = self._build_dashboard_text(data)
-        new_live_messages = self._build_new_live_messages(data.live)
         state = LiveFeedState(live=list(data.live), upcoming=list(data.upcoming))
         return DashboardUpdate(
             dashboard_text=dashboard_text,
-            new_live_messages=new_live_messages,
+            new_live_messages=[],
             state=state,
             generated_at=datetime.now(timezone.utc),
         )
@@ -59,22 +57,6 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
                 f"• [{title}]({video.url}) — {self._italic(channel, already_escaped=True)}"
             )
         return formatted
-
-    def _build_new_live_messages(self, lives: Iterable[Video]) -> List[str]:
-        current_ids = {video.video_id for video in lives}
-        new_ids = current_ids - self._last_seen_live_ids
-        self._last_seen_live_ids = current_ids
-
-        messages: List[str] = []
-        for video in lives:
-            if video.video_id not in new_ids:
-                continue
-            title = escape_markdown(video.title, version=2)
-            channel = escape_markdown(video.channel_title, version=2)
-            messages.append(
-                f"🔴 {self._bold('LIVE')} [{title}]({video.url})\n{self._italic(channel, already_escaped=True)}"
-            )
-        return messages
 
     def _bold(self, text: str) -> str:
         escaped = escape_markdown(text, version=2)
