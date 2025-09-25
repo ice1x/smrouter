@@ -9,7 +9,7 @@ from genti.transformations.live_dashboard import LiveDashboardTransformation
 
 
 def test_transformation_builds_dashboard_and_skips_extra_messages():
-    transformation = LiveDashboardTransformation(show_upcoming=True)
+    transformation = LiveDashboardTransformation()
     state = LiveFeedState(
         live=[
             Video(
@@ -38,12 +38,13 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
 
     assert "Прямо сейчас" in first_update.dashboard_text
     assert "Title\\_1" in first_update.dashboard_text
+    assert "Скоро начнутся" not in first_update.dashboard_text
     assert first_update.new_live_messages == []
     assert second_update.new_live_messages == []
 
 
 def test_transformation_handles_empty_lists():
-    transformation = LiveDashboardTransformation(show_upcoming=False)
+    transformation = LiveDashboardTransformation()
     state = LiveFeedState(live=[], upcoming=[])
 
     update = asyncio.run(transformation.transform(state))

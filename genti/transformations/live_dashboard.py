@@ -11,10 +11,7 @@ from genti.platform import TransformationStage
 
 
 class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUpdate]):
-    """Render a dashboard summary with live and upcoming broadcasts."""
-
-    def __init__(self, *, show_upcoming: bool = True) -> None:
-        self._show_upcoming = show_upcoming
+    """Render a dashboard summary with the currently active broadcasts."""
 
     async def transform(self, data: LiveFeedState) -> DashboardUpdate:
         dashboard_text = self._build_dashboard_text(data)
@@ -31,16 +28,6 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         lines: List[str] = []
         lines.append(f"🎥 {self._bold('Прямо сейчас в эфире')}")
         lines.extend(self._format_video_list(state.live, empty_placeholder="— (пусто)"))
-
-        if self._show_upcoming:
-            lines.append("")
-            lines.append(f"⏳ {self._bold('Скоро начнутся')}")
-            lines.extend(
-                self._format_video_list(
-                    state.upcoming,
-                    empty_placeholder="— (ничего в ближайшее время)",
-                )
-            )
 
         lines.append("")
         lines.append(self._italic(f"обновлено: {now_local}"))
