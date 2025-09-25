@@ -50,3 +50,12 @@ def test_transformation_handles_empty_lists():
     update = asyncio.run(transformation.transform(state))
     assert "(пусто)" in update.dashboard_text
     assert update.new_live_messages == []
+
+
+def test_transformation_reports_errors():
+    transformation = LiveDashboardTransformation()
+    state = LiveFeedState(live=[], upcoming=[], errors=["Превышена квота YouTube API — обновление временно недоступно."])
+
+    update = asyncio.run(transformation.transform(state))
+    assert "данные недоступны" in update.dashboard_text
+    assert "⚠️" in update.dashboard_text

@@ -3,10 +3,6 @@ import asyncio
 import pytest
 
 pytest.importorskip("aiohttp")
-from yarl import URL
-
-
-import aiohttp
 
 from genti.connectors.youtube import YouTubeLiveConnector
 from genti.models import LiveFeedState, Video
@@ -30,6 +26,7 @@ def test_youtube_connector_deduplicates(monkeypatch):
                 Video("v1", "A duplicate", "C", "url1"),
             ],
             [Video("v2", "B", "C", "url2")],
+            [],
         )
 
     monkeypatch.setattr(
@@ -87,9 +84,10 @@ async def test_youtube_search_handles_forbidden(caplog):
 
     caplog.set_level("ERROR")
 
-    result = await connector._search(ForbiddenSession(), "chan", "live")
+    items, error_message = await connector._search(ForbiddenSession(), "chan", "live")
 
-    assert result == []
+    assert items == []
+    assert error_message == "Превышена квота YouTube API — обновление временно недоступно."
     assert any(
         "YouTube search failed with 403 for channel=chan type=live: quotaExceeded"
         in record.getMessage()
