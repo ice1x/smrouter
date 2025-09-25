@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, List, Set
+from typing import Iterable, List
 
 from telegram.helpers import escape_markdown
 
@@ -11,19 +11,14 @@ from genti.platform import TransformationStage
 
 
 class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUpdate]):
-    """Render a dashboard summary and detect new live broadcasts."""
-
-    def __init__(self, *, show_upcoming: bool = True) -> None:
-        self._show_upcoming = show_upcoming
-        self._last_seen_live_ids: Set[str] = set()
+    """Render a dashboard summary with the currently active broadcasts."""
 
     async def transform(self, data: LiveFeedState) -> DashboardUpdate:
         dashboard_text = self._build_dashboard_text(data)
-        new_live_messages = self._build_new_live_messages(data.live)
         state = LiveFeedState(live=list(data.live), upcoming=list(data.upcoming))
         return DashboardUpdate(
             dashboard_text=dashboard_text,
-            new_live_messages=new_live_messages,
+            new_live_messages=[],
             state=state,
             generated_at=datetime.now(timezone.utc),
         )
@@ -33,16 +28,6 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         lines: List[str] = []
         lines.append(f"🎥 {self._bold('Прямо сейчас в эфире')}")
         lines.extend(self._format_video_list(state.live, empty_placeholder="— (пусто)"))
-
-        if self._show_upcoming:
-            lines.append("")
-            lines.append(f"⏳ {self._bold('Скоро начнутся')}")
-            lines.extend(
-                self._format_video_list(
-                    state.upcoming,
-                    empty_placeholder="— (ничего в ближайшее время)",
-                )
-            )
 
         lines.append("")
         lines.append(self._italic(f"обновлено: {now_local}"))
@@ -54,27 +39,9 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         formatted: List[str] = []
         for video in videos:
             title = escape_markdown(video.title, version=2)
-            channel = escape_markdown(video.channel_title, version=2)
-            formatted.append(
-                f"• [{title}]({video.url}) — {self._italic(channel, already_escaped=True)}"
-            )
+            url = escape_markdown(video.url, version=2)
+            formatted.append(f"• {title} - {url}")
         return formatted
-
-    def _build_new_live_messages(self, lives: Iterable[Video]) -> List[str]:
-        current_ids = {video.video_id for video in lives}
-        new_ids = current_ids - self._last_seen_live_ids
-        self._last_seen_live_ids = current_ids
-
-        messages: List[str] = []
-        for video in lives:
-            if video.video_id not in new_ids:
-                continue
-            title = escape_markdown(video.title, version=2)
-            channel = escape_markdown(video.channel_title, version=2)
-            messages.append(
-                f"🔴 {self._bold('LIVE')} [{title}]({video.url})\n{self._italic(channel, already_escaped=True)}"
-            )
-        return messages
 
     def _bold(self, text: str) -> str:
         escaped = escape_markdown(text, version=2)

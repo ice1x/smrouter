@@ -70,7 +70,7 @@ async def main() -> None:
         show_upcoming=SHOW_UPCOMING,
         logger=logging.getLogger("genti.youtube"),
     )
-    transformation = LiveDashboardTransformation(show_upcoming=SHOW_UPCOMING)
+    transformation = LiveDashboardTransformation()
     telegram_connector = TelegramDashboardConnector(
         application=application,
         channel_id=TELEGRAM_CHANNEL_ID,
