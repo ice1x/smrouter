@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Iterable, List, Tuple
+from typing import Any, Iterable, List, Tuple
 
 import aiohttp
 
@@ -89,15 +89,19 @@ class YouTubeLiveConnector:
         self._logger.debug("Requesting YouTube search: channel=%s type=%s", channel_id, event_type)
         try:
             async with session.get(_YOUTUBE_SEARCH_URL, params=params, timeout=20) as response:
-                response.raise_for_status()
+                if response.status >= 400:
+                    error_detail = await self._extract_error_detail(response)
+                    self._logger.error(
+                        "YouTube search failed with %s for channel=%s type=%s: %s",
+                        response.status,
+                        channel_id,
+                        event_type,
+                        error_detail,
+                    )
+                    return []
                 payload = await response.json()
         except asyncio.TimeoutError:
             self._logger.warning("YouTube search timed out: channel=%s type=%s", channel_id, event_type)
-            return []
-        except aiohttp.ClientResponseError as exc:
-            self._logger.error(
-                "YouTube search failed with %s for channel=%s type=%s", exc.status, channel_id, event_type
-            )
             return []
         except aiohttp.ClientError:
             self._logger.exception("YouTube search failed: channel=%s type=%s", channel_id, event_type)
@@ -110,6 +114,30 @@ class YouTubeLiveConnector:
             )
             return []
         return items
+
+    async def _extract_error_detail(self, response: aiohttp.ClientResponse) -> str:
+        try:
+            payload: Any = await response.json()
+        except (aiohttp.ContentTypeError, ValueError):
+            text = (await response.text())[:200]
+            if text:
+                return text
+            return response.reason or str(response.status)
+
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                message = error.get("message")
+                if isinstance(message, str) and message:
+                    return message
+                errors = error.get("errors")
+                if isinstance(errors, list) and errors:
+                    first = errors[0]
+                    if isinstance(first, dict):
+                        reason = first.get("reason")
+                        if isinstance(reason, str) and reason:
+                            return reason
+        return response.reason or str(response.status)
 
     def _parse_items(self, items: Iterable[dict]) -> List[Video]:
         parsed: List[Video] = []
