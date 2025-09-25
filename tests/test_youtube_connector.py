@@ -64,11 +64,16 @@ class ForbiddenResponse:
         return False
 
     async def json(self):
-        return {}
-
-    def raise_for_status(self):
-        request_info = aiohttp.RequestInfo(URL(self.url), "GET", headers={}, real_url=URL(self.url))
-        raise aiohttp.ClientResponseError(request_info, (), status=403, message="Forbidden")
+        return {
+            "error": {
+                "message": "quotaExceeded",
+                "errors": [
+                    {
+                        "reason": "quotaExceeded",
+                    }
+                ],
+            }
+        }
 
 
 class ForbiddenSession:
@@ -85,4 +90,8 @@ async def test_youtube_search_handles_forbidden(caplog):
     result = await connector._search(ForbiddenSession(), "chan", "live")
 
     assert result == []
-    assert any("YouTube search failed with 403" in record.getMessage() for record in caplog.records)
+    assert any(
+        "YouTube search failed with 403 for channel=chan type=live: quotaExceeded"
+        in record.getMessage()
+        for record in caplog.records
+    )
