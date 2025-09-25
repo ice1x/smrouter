@@ -7,6 +7,7 @@ import signal
 from contextlib import suppress
 from typing import Awaitable, Callable, Dict
 
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from genti.connectors.telegram import TelegramDashboardConnector
@@ -26,12 +27,53 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 YT_API_KEY = os.getenv("YT_API_KEY")
 WHITELIST = [c.strip() for c in os.getenv("WHITELIST", "").split(",") if c.strip()]
+TELEGRAM_ALLOWED_USER_IDS = [
+    c.strip() for c in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if c.strip()
+]
+_ALLOWED_ACTOR_IDS = set(TELEGRAM_ALLOWED_USER_IDS)
+if TELEGRAM_CHANNEL_ID:
+    normalized_channel_id = TELEGRAM_CHANNEL_ID.strip()
+    if normalized_channel_id:
+        _ALLOWED_ACTOR_IDS.add(normalized_channel_id)
+        if normalized_channel_id.lstrip("-").isdigit():
+            _ALLOWED_ACTOR_IDS.add(str(int(normalized_channel_id)))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))
 SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "1") == "1"
 MAX_CONSECUTIVE_FAILURES = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "4"))
 
 
-async def start_cmd(update, context):
+def _is_actor_allowed(update: Update) -> bool:
+    if not _ALLOWED_ACTOR_IDS:
+        return False
+
+    user = getattr(update, "effective_user", None)
+    if user is not None:
+        user_id = getattr(user, "id", None)
+        if user_id is not None and str(user_id) in _ALLOWED_ACTOR_IDS:
+            return True
+
+    chat = getattr(update, "effective_chat", None)
+    if chat is not None:
+        chat_id = getattr(chat, "id", None)
+        if chat_id is not None and str(chat_id) in _ALLOWED_ACTOR_IDS:
+            return True
+
+    return False
+
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_actor_allowed(update):
+        user = getattr(getattr(update, "effective_user", None), "id", None)
+        chat = getattr(getattr(update, "effective_chat", None), "id", None)
+        logger.warning(
+            "Unauthorized start command: user_id=%s chat_id=%s",  # noqa: G004
+            user,
+            chat,
+        )
+        if update.message is not None:
+            await update.message.reply_text("Доступ к этому боту ограничен владельцем.")
+        return
+
     await update.message.reply_text(
         "Ок! Дашборд будет поддерживаться автоматически. Закрепите этот пост, если он не закрепился сам."
     )
