@@ -39,10 +39,8 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         formatted: List[str] = []
         for video in videos:
             title = escape_markdown(video.title, version=2)
-            channel = escape_markdown(video.channel_title, version=2)
-            formatted.append(
-                f"• [{title}]({video.url}) — {self._italic(channel, already_escaped=True)}"
-            )
+            url = escape_markdown(video.url, version=2)
+            formatted.append(f"• {title} - {url}")
         return formatted
 
     def _bold(self, text: str) -> str:
