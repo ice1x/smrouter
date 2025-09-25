@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Iterable, List, Tuple
+from typing import Any, Iterable, List, Set, Tuple
 
 import aiohttp
 
@@ -45,38 +45,49 @@ class YouTubeLiveConnector:
 
         live_entries: List[Video] = []
         upcoming_entries: List[Video] = []
+        errors: Set[str] = set()
 
         for channel_id, result in zip(self._channel_ids, results):
             if isinstance(result, Exception):
                 self._logger.warning("Failed to fetch channel %s", channel_id, exc_info=result)
+                errors.add("Не удалось обновить данные с YouTube API.")
                 continue
-            live, upcoming = result
+            live, upcoming, channel_errors = result
             live_entries.extend(live)
             upcoming_entries.extend(upcoming)
+            errors.update(channel_errors)
 
         return LiveFeedState(
             live=self._deduplicate(live_entries),
             upcoming=self._deduplicate(upcoming_entries),
+            errors=sorted(errors),
         )
 
     async def _collect_for_channel(
         self, session: aiohttp.ClientSession, channel_id: str
-    ) -> Tuple[List[Video], List[Video]]:
+    ) -> Tuple[List[Video], List[Video], List[str]]:
         live_task = asyncio.create_task(self._search(session, channel_id, "live"))
         upcoming_task = None
         if self._show_upcoming:
             upcoming_task = asyncio.create_task(self._search(session, channel_id, "upcoming"))
 
-        live_items = await live_task
-        upcoming_items = []
+        live_items, live_error = await live_task
+        upcoming_items: List[dict] = []
+        upcoming_error: str | None = None
         if upcoming_task is not None:
-            upcoming_items = await upcoming_task
+            upcoming_items, upcoming_error = await upcoming_task
 
-        return self._parse_items(live_items), self._parse_items(upcoming_items)
+        errors: List[str] = []
+        if live_error:
+            errors.append(live_error)
+        if upcoming_error:
+            errors.append(upcoming_error)
+
+        return self._parse_items(live_items), self._parse_items(upcoming_items), errors
 
     async def _search(
         self, session: aiohttp.ClientSession, channel_id: str, event_type: str
-    ) -> List[dict]:
+    ) -> Tuple[List[dict], str | None]:
         params = {
             "part": "snippet",
             "channelId": channel_id,
@@ -98,22 +109,22 @@ class YouTubeLiveConnector:
                         event_type,
                         error_detail,
                     )
-                    return []
+                    return [], self._user_error_message(response.status, error_detail)
                 payload = await response.json()
         except asyncio.TimeoutError:
             self._logger.warning("YouTube search timed out: channel=%s type=%s", channel_id, event_type)
-            return []
+            return [], "Таймаут запроса к YouTube API."
         except aiohttp.ClientError:
             self._logger.exception("YouTube search failed: channel=%s type=%s", channel_id, event_type)
-            return []
+            return [], "Ошибка сети при обращении к YouTube API."
 
         items = payload.get("items")
         if not isinstance(items, list):
             self._logger.warning(
                 "Unexpected YouTube response structure for channel %s: %s", channel_id, payload
             )
-            return []
-        return items
+            return [], "Неожиданный ответ YouTube API."
+        return items, None
 
     async def _extract_error_detail(self, response: aiohttp.ClientResponse) -> str:
         try:
@@ -138,6 +149,17 @@ class YouTubeLiveConnector:
                         if isinstance(reason, str) and reason:
                             return reason
         return response.reason or str(response.status)
+
+    def _user_error_message(self, status: int, detail: str | None) -> str:
+        detail = detail or ""
+        detail_lower = detail.lower()
+        if status == 403 and "quota" in detail_lower:
+            return "Превышена квота YouTube API — обновление временно недоступно."
+        if status == 401:
+            return "Недействительный ключ YouTube API."
+        if detail:
+            return f"Ошибка YouTube API: {detail}"
+        return f"Ошибка YouTube API (код {status})."
 
     def _parse_items(self, items: Iterable[dict]) -> List[Video]:
         parsed: List[Video] = []

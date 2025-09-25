@@ -1,7 +1,7 @@
 """Common dataclasses shared across the live dashboard platform."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List
 
@@ -22,6 +22,7 @@ class LiveFeedState:
 
     live: List[Video]
     upcoming: List[Video]
+    errors: List[str] = field(default_factory=list)
 
 
 @dataclass

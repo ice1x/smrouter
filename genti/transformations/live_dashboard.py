@@ -15,7 +15,11 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
 
     async def transform(self, data: LiveFeedState) -> DashboardUpdate:
         dashboard_text = self._build_dashboard_text(data)
-        state = LiveFeedState(live=list(data.live), upcoming=list(data.upcoming))
+        state = LiveFeedState(
+            live=list(data.live),
+            upcoming=list(data.upcoming),
+            errors=list(data.errors),
+        )
         return DashboardUpdate(
             dashboard_text=dashboard_text,
             new_live_messages=[],
@@ -27,9 +31,15 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         now_local = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
         lines: List[str] = []
         lines.append(f"🎥 {self._bold('Прямо сейчас в эфире')}")
-        lines.extend(self._format_video_list(state.live, empty_placeholder="— (пусто)"))
+
+        empty_placeholder = "— данные недоступны" if state.errors else "— (пусто)"
+        lines.extend(self._format_video_list(state.live, empty_placeholder=empty_placeholder))
 
         lines.append("")
+        for error in state.errors:
+            lines.append(f"⚠️ {escape_markdown(error, version=2)}")
+        if state.errors:
+            lines.append("")
         lines.append(self._italic(f"обновлено: {now_local}"))
         return "\n".join(lines)
 
