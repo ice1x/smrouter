@@ -23,6 +23,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _read_positive_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning("Invalid value for %s=%r, falling back to %s", name, raw_value, default)
+        return default
+    if value < 0:
+        logger.warning("Negative value for %s=%s is not allowed; using %s", name, value, default)
+        return default
+    return value
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 YT_API_KEY = os.getenv("YT_API_KEY")
@@ -40,6 +55,19 @@ if TELEGRAM_CHANNEL_ID:
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))
 SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "1") == "1"
 MAX_CONSECUTIVE_FAILURES = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "4"))
+TELEGRAM_UPDATES_POLL_INTERVAL = _read_positive_float_env(
+    "TELEGRAM_UPDATES_POLL_INTERVAL", float(POLL_SECONDS)
+)
+_default_updates_timeout = min(float(POLL_SECONDS), 50.0)
+TELEGRAM_UPDATES_TIMEOUT = _read_positive_float_env(
+    "TELEGRAM_UPDATES_TIMEOUT", _default_updates_timeout
+)
+if TELEGRAM_UPDATES_TIMEOUT > 50.0:
+    logger.warning(
+        "TELEGRAM_UPDATES_TIMEOUT=%s exceeds Telegram API limit (50s); clamping to 50s",
+        TELEGRAM_UPDATES_TIMEOUT,
+    )
+    TELEGRAM_UPDATES_TIMEOUT = 50.0
 
 
 def _is_actor_allowed(update: Update) -> bool:
@@ -97,10 +125,12 @@ async def main() -> None:
     _validate_environment()
 
     logger.info(
-        "Запускаем платформу: whitelist=%s poll_seconds=%s show_upcoming=%s",
+        "Запускаем платформу: whitelist=%s poll_seconds=%s show_upcoming=%s tg_poll_interval=%s tg_timeout=%s",
         ",".join(WHITELIST),
         POLL_SECONDS,
         SHOW_UPCOMING,
+        TELEGRAM_UPDATES_POLL_INTERVAL,
+        TELEGRAM_UPDATES_TIMEOUT,
     )
 
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -191,7 +221,10 @@ async def main() -> None:
         await application.start()
 
         if application.updater is not None:
-            await application.updater.start_polling()
+            await application.updater.start_polling(
+                poll_interval=TELEGRAM_UPDATES_POLL_INTERVAL,
+                timeout=TELEGRAM_UPDATES_TIMEOUT,
+            )
 
         await stop_event.wait()
     finally:
