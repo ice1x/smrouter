@@ -38,6 +38,7 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
 
     assert "Прямо сейчас" in first_update.dashboard_text
     assert "Title\\_1" in first_update.dashboard_text
+    assert "Title\\_1 \\- https://youtu.be/vid1" in first_update.dashboard_text
     assert "Скоро начнутся" not in first_update.dashboard_text
     assert first_update.new_live_messages == []
     assert second_update.new_live_messages == []
