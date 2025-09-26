@@ -14,6 +14,7 @@ class Video:
     title: str
     channel_title: str
     url: str
+    viewer_count: int | None = None
 
 
 @dataclass

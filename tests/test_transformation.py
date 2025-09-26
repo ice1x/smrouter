@@ -17,6 +17,7 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
                 title="Title_1 [test]",
                 channel_title="Ch*1*",
                 url="https://youtu.be/vid1",
+                viewer_count=321,
             )
         ],
         upcoming=[
@@ -25,6 +26,7 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
                 title="Another",
                 channel_title="Channel",
                 url="https://youtu.be/vid2",
+                viewer_count=12,
             )
         ],
     )
@@ -36,10 +38,10 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
 
     first_update, second_update = asyncio.run(run_updates())
 
-    assert "Прямо сейчас" in first_update.dashboard_text
-    assert "Title\\_1" in first_update.dashboard_text
-    assert "Title\\_1 \\- https://youtu.be/vid1" in first_update.dashboard_text
-    assert "Скоро начнутся" not in first_update.dashboard_text
+    assert "⭐️ YOUTUBE ⭐️" in first_update.dashboard_text
+    assert "CH\\*1\\* \\[321\\]" in first_update.dashboard_text
+    assert "\n https://youtu.be/vid1" in first_update.dashboard_text
+    assert "Прямо сейчас" not in first_update.dashboard_text
     assert first_update.new_live_messages == []
     assert second_update.new_live_messages == []
 
@@ -49,6 +51,7 @@ def test_transformation_handles_empty_lists():
     state = LiveFeedState(live=[], upcoming=[])
 
     update = asyncio.run(transformation.transform(state))
+    assert "⭐️ YOUTUBE ⭐️" in update.dashboard_text
     assert "(пусто)" in update.dashboard_text
     assert update.new_live_messages == []
 

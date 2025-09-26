@@ -28,16 +28,15 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         )
 
     def _build_dashboard_text(self, state: LiveFeedState) -> str:
-        now_local = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-        lines: List[str] = []
-        lines.append(f"🎥 {self._bold('Прямо сейчас в эфире')}")
+        lines: List[str] = ["⭐️ YOUTUBE ⭐️", ""]
 
         empty_placeholder = "— данные недоступны" if state.errors else "— (пусто)"
         lines.extend(self._format_video_list(state.live, empty_placeholder=empty_placeholder))
 
-        if not state.errors:
+        if state.errors:
             lines.append("")
-        lines.append(self._italic(f"обновлено: {now_local}"))
+            lines.extend(self._format_errors(state.errors))
+
         return "\n".join(lines)
 
     def _format_video_list(self, videos: Iterable[Video], *, empty_placeholder: str) -> List[str]:
@@ -45,15 +44,22 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
             return [escape_markdown(empty_placeholder, version=2)]
         formatted: List[str] = []
         for video in videos:
-            title = escape_markdown(video.title, version=2)
-            url = escape_markdown(video.url, version=2)
-            formatted.append(f"• {title} \\- {url}")
+            channel = escape_markdown(video.channel_title.upper(), version=2)
+            viewers = self._format_viewer_count(video.viewer_count)
+            short_url = escape_markdown(self._short_url(video), version=2)
+            formatted.append(f"{channel} \\[{viewers}\\]")
+            formatted.append(f" {short_url}")
         return formatted
 
-    def _bold(self, text: str) -> str:
-        escaped = escape_markdown(text, version=2)
-        return f"*{escaped}*"
+    def _format_errors(self, errors: Iterable[str]) -> List[str]:
+        return [escape_markdown(error, version=2) for error in errors]
 
-    def _italic(self, text: str, *, already_escaped: bool = False) -> str:
-        escaped = text if already_escaped else escape_markdown(text, version=2)
-        return f"_{escaped}_"
+    def _format_viewer_count(self, viewer_count: int | None) -> str:
+        if viewer_count is None:
+            return "?"
+        return f"{viewer_count:,}".replace(",", " ")
+
+    def _short_url(self, video: Video) -> str:
+        if video.video_id:
+            return f"https://youtu.be/{video.video_id}"
+        return video.url
