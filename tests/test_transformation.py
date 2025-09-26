@@ -59,4 +59,5 @@ def test_transformation_reports_errors():
 
     update = asyncio.run(transformation.transform(state))
     assert "данные недоступны" in update.dashboard_text
-    assert "⚠️" in update.dashboard_text
+    assert "⚠️" not in update.dashboard_text
+    assert "ℹ️" in update.dashboard_text
