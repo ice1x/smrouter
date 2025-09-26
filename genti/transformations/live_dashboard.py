@@ -35,10 +35,7 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         empty_placeholder = "— данные недоступны" if state.errors else "— (пусто)"
         lines.extend(self._format_video_list(state.live, empty_placeholder=empty_placeholder))
 
-        lines.append("")
-        for error in state.errors:
-            lines.append(f"⚠️ {escape_markdown(error, version=2)}")
-        if state.errors:
+        if not state.errors:
             lines.append("")
         lines.append(self._italic(f"обновлено: {now_local}"))
         return "\n".join(lines)
