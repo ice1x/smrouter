@@ -12,6 +12,7 @@ from genti.models import LiveFeedState, Video
 
 
 _YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+_YOUTUBE_SEARCH_COST_UNITS = 100
 _YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v="
 
 
@@ -97,31 +98,50 @@ class YouTubeLiveConnector:
             "maxResults": 10,
             "key": self._api_key,
         }
-        self._logger.debug("Requesting YouTube search: channel=%s type=%s", channel_id, event_type)
+        self._logger.debug(
+            "Requesting YouTube search: channel=%s type=%s cost=%s units",
+            channel_id,
+            event_type,
+            _YOUTUBE_SEARCH_COST_UNITS,
+        )
         try:
             async with session.get(_YOUTUBE_SEARCH_URL, params=params, timeout=20) as response:
                 if response.status >= 400:
                     error_detail = await self._extract_error_detail(response)
                     self._logger.error(
-                        "YouTube search failed with %s for channel=%s type=%s: %s",
+                        "YouTube search failed with %s for channel=%s type=%s cost=%s units: %s",
                         response.status,
                         channel_id,
                         event_type,
+                        _YOUTUBE_SEARCH_COST_UNITS,
                         error_detail,
                     )
                     return [], self._user_error_message(response.status, error_detail)
                 payload = await response.json()
         except asyncio.TimeoutError:
-            self._logger.warning("YouTube search timed out: channel=%s type=%s", channel_id, event_type)
+            self._logger.warning(
+                "YouTube search timed out: channel=%s type=%s cost=%s units",
+                channel_id,
+                event_type,
+                _YOUTUBE_SEARCH_COST_UNITS,
+            )
             return [], "Таймаут запроса к YouTube API."
         except aiohttp.ClientError:
-            self._logger.exception("YouTube search failed: channel=%s type=%s", channel_id, event_type)
+            self._logger.exception(
+                "YouTube search failed: channel=%s type=%s cost=%s units",
+                channel_id,
+                event_type,
+                _YOUTUBE_SEARCH_COST_UNITS,
+            )
             return [], "Ошибка сети при обращении к YouTube API."
 
         items = payload.get("items")
         if not isinstance(items, list):
             self._logger.warning(
-                "Unexpected YouTube response structure for channel %s: %s", channel_id, payload
+                "Unexpected YouTube response structure for channel %s cost=%s units: %s",
+                channel_id,
+                _YOUTUBE_SEARCH_COST_UNITS,
+                payload,
             )
             return [], "Неожиданный ответ YouTube API."
         return items, None
