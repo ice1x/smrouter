@@ -53,7 +53,7 @@ if TELEGRAM_CHANNEL_ID:
         if normalized_channel_id.lstrip("-").isdigit():
             _ALLOWED_ACTOR_IDS.add(str(int(normalized_channel_id)))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))
-SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "1") == "1"
+SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "0") == "1"
 MAX_CONSECUTIVE_FAILURES = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "4"))
 TELEGRAM_UPDATES_POLL_INTERVAL = _read_positive_float_env(
     "TELEGRAM_UPDATES_POLL_INTERVAL", float(POLL_SECONDS)
