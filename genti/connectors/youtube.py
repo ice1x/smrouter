@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import socket
-from typing import Any, Iterable, List, Literal, Mapping, Sequence, Set, Tuple
+from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -16,8 +16,10 @@ import aiohttp
 from genti.models import LiveFeedState, Video
 
 
-_YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
-_YOUTUBE_SEARCH_COST_UNITS = 100
+_YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+_YOUTUBE_CHANNELS_COST_UNITS = 1
+_YOUTUBE_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+_YOUTUBE_PLAYLIST_ITEMS_COST_UNITS = 1
 _YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v="
 _YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 _YOUTUBE_VIDEOS_COST_UNITS = 5
@@ -48,6 +50,7 @@ class YouTubeLiveConnector:
             raise ValueError("http_mode must be 'sync' or 'async'")
         self._http_mode = http_mode
         self._logger = logger or logging.getLogger(__name__)
+        self._uploads_cache: dict[str, str] = {}
 
     async def fetch(self) -> LiveFeedState:
         if self._http_mode == "async":
@@ -92,139 +95,128 @@ class YouTubeLiveConnector:
         )
 
     async def _collect_for_channel_sync(self, channel_id: str) -> Tuple[List[Video], List[Video], List[str]]:
-        live_items, live_error = await asyncio.to_thread(self._search_sync, channel_id, "live")
-        upcoming_items: List[dict] = []
-        upcoming_error: str | None = None
-        if self._show_upcoming:
-            upcoming_items, upcoming_error = await asyncio.to_thread(
-                self._search_sync,
-                channel_id,
-                "upcoming",
-            )
-
+        playlist_id, playlist_error = await asyncio.to_thread(self._ensure_uploads_playlist_sync, channel_id)
         errors: List[str] = []
-        if live_error:
-            errors.append(live_error)
-        if upcoming_error:
-            errors.append(upcoming_error)
+        if playlist_error:
+            errors.append(playlist_error)
+        if not playlist_id:
+            return [], [], errors
 
-        live_ids = self._video_ids_from_items(live_items)
-        upcoming_ids = self._video_ids_from_items(upcoming_items)
-
-        live_counts: dict[str, int] = {}
-        if live_ids:
-            live_counts = await self._fetch_viewer_counts_sync(live_ids)
-
-        upcoming_counts: dict[str, int] = {}
-        if upcoming_ids:
-            upcoming_counts = await self._fetch_viewer_counts_sync(upcoming_ids)
-
-        return (
-            self._parse_items(live_items, viewer_counts=live_counts),
-            self._parse_items(upcoming_items, viewer_counts=upcoming_counts),
-            errors,
+        video_ids, playlist_items_error = await asyncio.to_thread(
+            self._playlist_video_ids_sync,
+            playlist_id,
         )
+        if playlist_items_error:
+            errors.append(playlist_items_error)
+        if not video_ids:
+            return [], [], errors
+
+        video_items, video_error = await asyncio.to_thread(
+            self._fetch_video_metadata_sync,
+            video_ids,
+        )
+        if video_error:
+            errors.append(video_error)
+
+        live, upcoming = self._classify_videos(channel_id, video_items)
+        return live, upcoming, errors
 
     async def _collect_for_channel(
         self, session: aiohttp.ClientSession, channel_id: str
     ) -> Tuple[List[Video], List[Video], List[str]]:
-        live_task = asyncio.create_task(self._search(session, channel_id, "live"))
-        upcoming_task = None
-        if self._show_upcoming:
-            upcoming_task = asyncio.create_task(self._search(session, channel_id, "upcoming"))
-
-        live_items, live_error = await live_task
-        upcoming_items: List[dict] = []
-        upcoming_error: str | None = None
-        if upcoming_task is not None:
-            upcoming_items, upcoming_error = await upcoming_task
-
+        playlist_id, playlist_error = await self._ensure_uploads_playlist_async(session, channel_id)
         errors: List[str] = []
-        if live_error:
-            errors.append(live_error)
-        if upcoming_error:
-            errors.append(upcoming_error)
+        if playlist_error:
+            errors.append(playlist_error)
+        if not playlist_id:
+            return [], [], errors
 
-        live_ids = self._video_ids_from_items(live_items)
-        upcoming_ids = self._video_ids_from_items(upcoming_items)
+        video_ids, playlist_items_error = await self._playlist_video_ids_async(session, playlist_id)
+        if playlist_items_error:
+            errors.append(playlist_items_error)
+        if not video_ids:
+            return [], [], errors
 
-        live_counts: dict[str, int] = {}
-        if live_ids:
-            live_counts = await self._fetch_viewer_counts_async(session, live_ids)
+        video_items, video_error = await self._fetch_video_metadata_async(session, video_ids)
+        if video_error:
+            errors.append(video_error)
 
-        upcoming_counts: dict[str, int] = {}
-        if upcoming_ids:
-            upcoming_counts = await self._fetch_viewer_counts_async(session, upcoming_ids)
+        live, upcoming = self._classify_videos(channel_id, video_items)
+        return live, upcoming, errors
 
-        return (
-            self._parse_items(live_items, viewer_counts=live_counts),
-            self._parse_items(upcoming_items, viewer_counts=upcoming_counts),
-            errors,
-        )
+    async def _ensure_uploads_playlist_async(
+        self, session: aiohttp.ClientSession, channel_id: str
+    ) -> Tuple[str | None, str | None]:
+        cached = self._uploads_cache.get(channel_id)
+        if cached:
+            return cached, None
 
-    def _build_params(self, channel_id: str, event_type: str) -> dict[str, Any]:
-        return {
-            "part": "snippet",
-            "channelId": channel_id,
-            "eventType": event_type,
-            "type": "video",
-            "order": "date",
-            "maxResults": 10,
+        params = {
+            "part": "contentDetails",
+            "id": channel_id,
             "key": self._api_key,
         }
-
-    async def _search(
-        self, session: aiohttp.ClientSession, channel_id: str, event_type: str
-    ) -> Tuple[List[dict], str | None]:
-        params = self._build_params(channel_id, event_type)
         self._logger.info(
-            "Requesting YouTube search: channel=%s type=%s cost=%s units",
+            "Requesting YouTube channels: channel=%s cost=%s units",
             channel_id,
-            event_type,
-            _YOUTUBE_SEARCH_COST_UNITS,
+            _YOUTUBE_CHANNELS_COST_UNITS,
         )
         try:
-            async with session.get(_YOUTUBE_SEARCH_URL, params=params, timeout=20) as response:
+            async with session.get(_YOUTUBE_CHANNELS_URL, params=params, timeout=20) as response:
                 if response.status >= 400:
-                    error_detail = await self._extract_error_detail(response)
+                    detail = await self._extract_error_detail(response)
                     self._logger.error(
-                        "YouTube search failed with %s for channel=%s type=%s cost=%s units: %s",
+                        "YouTube channels failed with %s for channel=%s cost=%s units: %s",
                         response.status,
                         channel_id,
-                        event_type,
-                        _YOUTUBE_SEARCH_COST_UNITS,
-                        error_detail,
+                        _YOUTUBE_CHANNELS_COST_UNITS,
+                        detail,
                     )
-                    return [], self._user_error_message(response.status, error_detail)
+                    return None, self._user_error_message(response.status, detail)
                 payload = await response.json()
         except asyncio.TimeoutError:
             self._logger.warning(
-                "YouTube search timed out: channel=%s type=%s cost=%s units",
+                "YouTube channels timed out: channel=%s cost=%s units",
                 channel_id,
-                event_type,
-                _YOUTUBE_SEARCH_COST_UNITS,
+                _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return [], "Таймаут запроса к YouTube API."
+            return None, "Таймаут запроса к YouTube API."
         except aiohttp.ClientError:
             self._logger.exception(
-                "YouTube search failed: channel=%s type=%s cost=%s units",
+                "YouTube channels failed: channel=%s cost=%s units",
                 channel_id,
-                event_type,
-                _YOUTUBE_SEARCH_COST_UNITS,
+                _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return [], "Ошибка сети при обращении к YouTube API."
+            return None, "Ошибка сети при обращении к YouTube API."
 
-        return self._interpret_payload(channel_id, payload)
+        playlist_id = self._extract_uploads_playlist(payload)
+        if not playlist_id:
+            self._logger.warning(
+                "YouTube channels returned no uploads playlist for channel=%s cost=%s units",
+                channel_id,
+                _YOUTUBE_CHANNELS_COST_UNITS,
+            )
+            return None, "Не удалось получить список загрузок канала."
 
-    def _search_sync(self, channel_id: str, event_type: str) -> Tuple[List[dict], str | None]:
-        params = self._build_params(channel_id, event_type)
+        self._uploads_cache[channel_id] = playlist_id
+        return playlist_id, None
+
+    def _ensure_uploads_playlist_sync(self, channel_id: str) -> Tuple[str | None, str | None]:
+        cached = self._uploads_cache.get(channel_id)
+        if cached:
+            return cached, None
+
+        params = {
+            "part": "contentDetails",
+            "id": channel_id,
+            "key": self._api_key,
+        }
         self._logger.info(
-            "Requesting YouTube search: channel=%s type=%s cost=%s units",
+            "Requesting YouTube channels: channel=%s cost=%s units",
             channel_id,
-            event_type,
-            _YOUTUBE_SEARCH_COST_UNITS,
+            _YOUTUBE_CHANNELS_COST_UNITS,
         )
-        url = f"{_YOUTUBE_SEARCH_URL}?{urllib_parse.urlencode(params)}"
+        url = f"{_YOUTUBE_CHANNELS_URL}?{urllib_parse.urlencode(params)}"
         request = urllib_request.Request(url)
         try:
             with urllib_request.urlopen(request, timeout=20) as response:
@@ -232,11 +224,116 @@ class YouTubeLiveConnector:
         except urllib_error.HTTPError as exc:
             detail = self._extract_error_detail_sync(exc)
             self._logger.error(
-                "YouTube search failed with %s for channel=%s type=%s cost=%s units: %s",
+                "YouTube channels failed with %s for channel=%s cost=%s units: %s",
                 exc.code,
                 channel_id,
-                event_type,
-                _YOUTUBE_SEARCH_COST_UNITS,
+                _YOUTUBE_CHANNELS_COST_UNITS,
+                detail,
+            )
+            return None, self._user_error_message(exc.code, detail)
+        except urllib_error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                self._logger.warning(
+                    "YouTube channels timed out: channel=%s cost=%s units",
+                    channel_id,
+                    _YOUTUBE_CHANNELS_COST_UNITS,
+                )
+                return None, "Таймаут запроса к YouTube API."
+            self._logger.exception(
+                "YouTube channels failed: channel=%s cost=%s units",
+                channel_id,
+                _YOUTUBE_CHANNELS_COST_UNITS,
+            )
+            return None, "Ошибка сети при обращении к YouTube API."
+        except (TimeoutError, socket.timeout):
+            self._logger.warning(
+                "YouTube channels timed out: channel=%s cost=%s units",
+                channel_id,
+                _YOUTUBE_CHANNELS_COST_UNITS,
+            )
+            return None, "Таймаут запроса к YouTube API."
+
+        playlist_id = self._extract_uploads_playlist(payload)
+        if not playlist_id:
+            self._logger.warning(
+                "YouTube channels returned no uploads playlist for channel=%s cost=%s units",
+                channel_id,
+                _YOUTUBE_CHANNELS_COST_UNITS,
+            )
+            return None, "Не удалось получить список загрузок канала."
+
+        self._uploads_cache[channel_id] = playlist_id
+        return playlist_id, None
+
+    async def _playlist_video_ids_async(
+        self, session: aiohttp.ClientSession, playlist_id: str
+    ) -> Tuple[List[str], str | None]:
+        params = {
+            "part": "contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": 10,
+            "key": self._api_key,
+        }
+        self._logger.info(
+            "Requesting YouTube playlistItems: playlist=%s cost=%s units",
+            playlist_id,
+            _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
+        )
+        try:
+            async with session.get(_YOUTUBE_PLAYLIST_ITEMS_URL, params=params, timeout=20) as response:
+                if response.status >= 400:
+                    detail = await self._extract_error_detail(response)
+                    self._logger.error(
+                        "YouTube playlistItems failed with %s for playlist=%s cost=%s units: %s",
+                        response.status,
+                        playlist_id,
+                        _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
+                        detail,
+                    )
+                    return [], self._user_error_message(response.status, detail)
+                payload = await response.json()
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "YouTube playlistItems timed out: playlist=%s cost=%s units",
+                playlist_id,
+                _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
+            )
+            return [], "Таймаут запроса к YouTube API."
+        except aiohttp.ClientError:
+            self._logger.exception(
+                "YouTube playlistItems failed: playlist=%s cost=%s units",
+                playlist_id,
+                _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
+            )
+            return [], "Ошибка сети при обращении к YouTube API."
+
+        return self._extract_playlist_video_ids(payload), None
+
+    def _playlist_video_ids_sync(self, playlist_id: str) -> Tuple[List[str], str | None]:
+        params = {
+            "part": "contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": 10,
+            "key": self._api_key,
+        }
+        self._logger.info(
+            "Requesting YouTube playlistItems: playlist=%s cost=%s units",
+            playlist_id,
+            _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
+        )
+        url = f"{_YOUTUBE_PLAYLIST_ITEMS_URL}?{urllib_parse.urlencode(params)}"
+        request = urllib_request.Request(url)
+        try:
+            with urllib_request.urlopen(request, timeout=20) as response:
+                payload = json.load(response)
+        except urllib_error.HTTPError as exc:
+            detail = self._extract_error_detail_sync(exc)
+            self._logger.error(
+                "YouTube playlistItems failed with %s for playlist=%s cost=%s units: %s",
+                exc.code,
+                playlist_id,
+                _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                 detail,
             )
             return [], self._user_error_message(exc.code, detail)
@@ -244,29 +341,129 @@ class YouTubeLiveConnector:
             reason = exc.reason
             if isinstance(reason, (TimeoutError, socket.timeout)):
                 self._logger.warning(
-                    "YouTube search timed out: channel=%s type=%s cost=%s units",
-                    channel_id,
-                    event_type,
-                    _YOUTUBE_SEARCH_COST_UNITS,
+                    "YouTube playlistItems timed out: playlist=%s cost=%s units",
+                    playlist_id,
+                    _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                 )
                 return [], "Таймаут запроса к YouTube API."
             self._logger.exception(
-                "YouTube search failed: channel=%s type=%s cost=%s units",
-                channel_id,
-                event_type,
-                _YOUTUBE_SEARCH_COST_UNITS,
+                "YouTube playlistItems failed: playlist=%s cost=%s units",
+                playlist_id,
+                _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
             return [], "Ошибка сети при обращении к YouTube API."
         except (TimeoutError, socket.timeout):
             self._logger.warning(
-                "YouTube search timed out: channel=%s type=%s cost=%s units",
-                channel_id,
-                event_type,
-                _YOUTUBE_SEARCH_COST_UNITS,
+                "YouTube playlistItems timed out: playlist=%s cost=%s units",
+                playlist_id,
+                _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
             return [], "Таймаут запроса к YouTube API."
 
-        return self._interpret_payload(channel_id, payload)
+        return self._extract_playlist_video_ids(payload), None
+
+    async def _fetch_video_metadata_async(
+        self, session: aiohttp.ClientSession, video_ids: Sequence[str]
+    ) -> Tuple[List[dict], str | None]:
+        items: List[dict] = []
+        error_message: str | None = None
+        for chunk in self._chunk_ids(video_ids):
+            params = self._build_videos_params(chunk)
+            self._logger.info(
+                "Requesting YouTube videos: ids=%s cost=%s units",
+                ",".join(chunk),
+                _YOUTUBE_VIDEOS_COST_UNITS,
+            )
+            try:
+                async with session.get(_YOUTUBE_VIDEOS_URL, params=params, timeout=20) as response:
+                    if response.status >= 400:
+                        detail = await self._extract_error_detail(response)
+                        self._logger.warning(
+                            "YouTube videos failed with %s for ids=%s cost=%s units: %s",
+                            response.status,
+                            ",".join(chunk),
+                            _YOUTUBE_VIDEOS_COST_UNITS,
+                            detail,
+                        )
+                        error_message = error_message or self._user_error_message(response.status, detail)
+                        continue
+                    payload = await response.json()
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "YouTube videos timed out: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                error_message = error_message or "Таймаут запроса к YouTube API."
+                continue
+            except aiohttp.ClientError:
+                self._logger.exception(
+                    "YouTube videos failed: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                error_message = error_message or "Ошибка сети при обращении к YouTube API."
+                continue
+
+            items.extend(self._extract_video_items(payload))
+
+        return items, error_message
+
+    def _fetch_video_metadata_sync(self, video_ids: Sequence[str]) -> Tuple[List[dict], str | None]:
+        items: List[dict] = []
+        error_message: str | None = None
+        for chunk in self._chunk_ids(video_ids):
+            params = self._build_videos_params(chunk)
+            self._logger.info(
+                "Requesting YouTube videos: ids=%s cost=%s units",
+                ",".join(chunk),
+                _YOUTUBE_VIDEOS_COST_UNITS,
+            )
+            url = f"{_YOUTUBE_VIDEOS_URL}?{urllib_parse.urlencode(params)}"
+            request = urllib_request.Request(url)
+            try:
+                with urllib_request.urlopen(request, timeout=20) as response:
+                    payload = json.load(response)
+            except urllib_error.HTTPError as exc:
+                detail = self._extract_error_detail_sync(exc)
+                self._logger.warning(
+                    "YouTube videos failed with %s for ids=%s cost=%s units: %s",
+                    exc.code,
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                    detail,
+                )
+                error_message = error_message or self._user_error_message(exc.code, detail)
+                continue
+            except urllib_error.URLError as exc:
+                reason = exc.reason
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    self._logger.warning(
+                        "YouTube videos timed out: ids=%s cost=%s units",
+                        ",".join(chunk),
+                        _YOUTUBE_VIDEOS_COST_UNITS,
+                    )
+                    error_message = error_message or "Таймаут запроса к YouTube API."
+                else:
+                    self._logger.exception(
+                        "YouTube videos failed: ids=%s cost=%s units",
+                        ",".join(chunk),
+                        _YOUTUBE_VIDEOS_COST_UNITS,
+                    )
+                    error_message = error_message or "Ошибка сети при обращении к YouTube API."
+                continue
+            except (TimeoutError, socket.timeout):
+                self._logger.warning(
+                    "YouTube videos timed out: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                error_message = error_message or "Таймаут запроса к YouTube API."
+                continue
+
+            items.extend(self._extract_video_items(payload))
+
+        return items, error_message
 
     async def _extract_error_detail(self, response: aiohttp.ClientResponse) -> str:
         try:
@@ -318,20 +515,6 @@ class YouTubeLiveConnector:
                             return reason
         return None
 
-    def _interpret_payload(self, channel_id: str, payload: Any) -> Tuple[List[dict], str | None]:
-        items: Any = None
-        if isinstance(payload, dict):
-            items = payload.get("items")
-        if not isinstance(items, list):
-            self._logger.warning(
-                "Unexpected YouTube response structure for channel %s cost=%s units: %s",
-                channel_id,
-                _YOUTUBE_SEARCH_COST_UNITS,
-                payload,
-            )
-            return [], "Неожиданный ответ YouTube API."
-        return items, None
-
     def _user_error_message(self, status: int, detail: str | None) -> str:
         detail = detail or ""
         detail_lower = detail.lower()
@@ -343,140 +526,9 @@ class YouTubeLiveConnector:
             return f"Ошибка YouTube API: {detail}"
         return f"Ошибка YouTube API (код {status})."
 
-    def _parse_items(
-        self,
-        items: Iterable[dict],
-        *,
-        viewer_counts: Mapping[str, int] | None = None,
-    ) -> List[Video]:
-        parsed: List[Video] = []
-        for item in items:
-            video_id = self._extract_video_id(item)
-            if not video_id:
-                continue
-            snippet = item.get("snippet") or {}
-            title = snippet.get("title") or "Без названия"
-            channel_title = snippet.get("channelTitle") or "Channel"
-            viewer_count = viewer_counts.get(video_id) if viewer_counts else None
-            parsed.append(
-                Video(
-                    video_id=video_id,
-                    title=title,
-                    channel_title=channel_title,
-                    url=f"{_YOUTUBE_VIDEO_URL}{video_id}",
-                    viewer_count=viewer_count,
-                )
-            )
-        return parsed
-
-    def _video_ids_from_items(self, items: Iterable[dict]) -> List[str]:
-        ids: List[str] = []
-        for item in items:
-            video_id = self._extract_video_id(item)
-            if video_id:
-                ids.append(video_id)
-        return ids
-
-    async def _fetch_viewer_counts_async(
-        self, session: aiohttp.ClientSession, video_ids: Sequence[str]
-    ) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for chunk in self._chunk_ids(video_ids):
-            params = self._build_videos_params(chunk)
-            self._logger.info(
-                "Requesting YouTube videos: ids=%s cost=%s units",
-                ",".join(chunk),
-                _YOUTUBE_VIDEOS_COST_UNITS,
-            )
-            try:
-                async with session.get(_YOUTUBE_VIDEOS_URL, params=params, timeout=20) as response:
-                    if response.status >= 400:
-                        detail = await self._extract_error_detail(response)
-                        self._logger.warning(
-                            "YouTube videos failed with %s for ids=%s cost=%s units: %s",
-                            response.status,
-                            ",".join(chunk),
-                            _YOUTUBE_VIDEOS_COST_UNITS,
-                            detail,
-                        )
-                        continue
-                    payload = await response.json()
-            except asyncio.TimeoutError:
-                self._logger.warning(
-                    "YouTube videos timed out: ids=%s cost=%s units",
-                    ",".join(chunk),
-                    _YOUTUBE_VIDEOS_COST_UNITS,
-                )
-                continue
-            except aiohttp.ClientError:
-                self._logger.exception(
-                    "YouTube videos failed: ids=%s cost=%s units",
-                    ",".join(chunk),
-                    _YOUTUBE_VIDEOS_COST_UNITS,
-                )
-                continue
-
-            counts.update(self._extract_viewer_counts(payload))
-
-        return counts
-
-    async def _fetch_viewer_counts_sync(self, video_ids: Sequence[str]) -> dict[str, int]:
-        return await asyncio.to_thread(self._fetch_viewer_counts_via_sync_http, video_ids)
-
-    def _fetch_viewer_counts_via_sync_http(self, video_ids: Sequence[str]) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for chunk in self._chunk_ids(video_ids):
-            params = self._build_videos_params(chunk)
-            self._logger.info(
-                "Requesting YouTube videos: ids=%s cost=%s units",
-                ",".join(chunk),
-                _YOUTUBE_VIDEOS_COST_UNITS,
-            )
-            url = f"{_YOUTUBE_VIDEOS_URL}?{urllib_parse.urlencode(params)}"
-            request = urllib_request.Request(url)
-            try:
-                with urllib_request.urlopen(request, timeout=20) as response:
-                    payload = json.load(response)
-            except urllib_error.HTTPError as exc:
-                detail = self._extract_error_detail_sync(exc)
-                self._logger.warning(
-                    "YouTube videos failed with %s for ids=%s cost=%s units: %s",
-                    exc.code,
-                    ",".join(chunk),
-                    _YOUTUBE_VIDEOS_COST_UNITS,
-                    detail,
-                )
-                continue
-            except urllib_error.URLError as exc:
-                reason = exc.reason
-                if isinstance(reason, (TimeoutError, socket.timeout)):
-                    self._logger.warning(
-                        "YouTube videos timed out: ids=%s cost=%s units",
-                        ",".join(chunk),
-                        _YOUTUBE_VIDEOS_COST_UNITS,
-                    )
-                else:
-                    self._logger.exception(
-                        "YouTube videos failed: ids=%s cost=%s units",
-                        ",".join(chunk),
-                        _YOUTUBE_VIDEOS_COST_UNITS,
-                    )
-                continue
-            except (TimeoutError, socket.timeout):
-                self._logger.warning(
-                    "YouTube videos timed out: ids=%s cost=%s units",
-                    ",".join(chunk),
-                    _YOUTUBE_VIDEOS_COST_UNITS,
-                )
-                continue
-
-            counts.update(self._extract_viewer_counts(payload))
-
-        return counts
-
     def _build_videos_params(self, video_ids: Sequence[str]) -> dict[str, Any]:
         return {
-            "part": "liveStreamingDetails",
+            "part": "snippet,liveStreamingDetails",
             "id": ",".join(video_ids),
             "key": self._api_key,
         }
@@ -484,39 +536,102 @@ class YouTubeLiveConnector:
     def _chunk_ids(self, video_ids: Sequence[str], chunk_size: int = 50) -> List[List[str]]:
         return [list(video_ids[i : i + chunk_size]) for i in range(0, len(video_ids), chunk_size)]
 
-    def _extract_viewer_counts(self, payload: Any) -> dict[str, int]:
-        counts: dict[str, int] = {}
+    def _extract_video_items(self, payload: Any) -> List[dict]:
         if not isinstance(payload, dict):
-            return counts
+            return []
         items = payload.get("items")
         if not isinstance(items, list):
-            return counts
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def _extract_uploads_playlist(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        first = items[0]
+        if not isinstance(first, dict):
+            return None
+        details = first.get("contentDetails")
+        if not isinstance(details, dict):
+            return None
+        related = details.get("relatedPlaylists")
+        if not isinstance(related, dict):
+            return None
+        uploads = related.get("uploads")
+        if isinstance(uploads, str) and uploads:
+            return uploads
+        return None
+
+    def _extract_playlist_video_ids(self, payload: Any) -> List[str]:
+        video_ids: List[str] = []
+        if not isinstance(payload, dict):
+            return video_ids
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return video_ids
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            details = item.get("contentDetails")
+            if not isinstance(details, dict):
+                continue
+            video_id = details.get("videoId")
+            if isinstance(video_id, str) and video_id:
+                video_ids.append(video_id)
+        return video_ids
+
+    def _classify_videos(
+        self, channel_id: str, items: Iterable[dict]
+    ) -> Tuple[List[Video], List[Video]]:
+        live: List[Video] = []
+        upcoming: List[Video] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             video_id = item.get("id")
             if not isinstance(video_id, str) or not video_id:
                 continue
-            details = item.get("liveStreamingDetails")
-            if not isinstance(details, dict):
+            snippet = item.get("snippet")
+            if not isinstance(snippet, dict):
                 continue
-            viewers = details.get("concurrentViewers")
-            if isinstance(viewers, str):
-                try:
-                    counts[video_id] = int(viewers)
-                except ValueError:
-                    continue
-            elif isinstance(viewers, int):
-                counts[video_id] = viewers
-        return counts
+            snippet_channel_id = snippet.get("channelId")
+            if isinstance(snippet_channel_id, str) and snippet_channel_id and snippet_channel_id != channel_id:
+                continue
+            status = snippet.get("liveBroadcastContent")
+            if status not in {"live", "upcoming"}:
+                continue
+            title = snippet.get("title") or "Без названия"
+            channel_title = snippet.get("channelTitle") or "Channel"
+            viewer_count = self._extract_viewer_count(item)
+            video = Video(
+                video_id=video_id,
+                title=title,
+                channel_title=channel_title,
+                url=f"{_YOUTUBE_VIDEO_URL}{video_id}",
+                viewer_count=viewer_count,
+            )
+            if status == "live":
+                live.append(video)
+            elif self._show_upcoming:
+                upcoming.append(video)
+        return live, upcoming
 
-    def _extract_video_id(self, item: dict) -> str | None:
-        identifier = item.get("id")
-        if isinstance(identifier, dict):
-            video_id = identifier.get("videoId")
-            if isinstance(video_id, str) and video_id:
-                return video_id
-        self._logger.debug("Skipping item without videoId: %s", item)
+    def _extract_viewer_count(self, item: Any) -> int | None:
+        if not isinstance(item, dict):
+            return None
+        details = item.get("liveStreamingDetails")
+        if not isinstance(details, dict):
+            return None
+        viewers = details.get("concurrentViewers")
+        if isinstance(viewers, str):
+            try:
+                return int(viewers)
+            except ValueError:
+                return None
+        if isinstance(viewers, int):
+            return viewers
         return None
 
     def _deduplicate(self, entries: Iterable[Video]) -> List[Video]:
