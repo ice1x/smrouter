@@ -1,4 +1,7 @@
 import asyncio
+import io
+import json
+from urllib import error as urllib_error
 
 import pytest
 
@@ -8,18 +11,10 @@ from genti.connectors.youtube import YouTubeLiveConnector
 from genti.models import LiveFeedState, Video
 
 
-class DummySession:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
 def test_youtube_connector_deduplicates(monkeypatch):
     connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=True)
 
-    async def fake_collect(self, session, channel_id):
+    async def fake_collect_sync(self, channel_id):
         return (
             [
                 Video("v1", "A", "C", "url1"),
@@ -29,15 +24,7 @@ def test_youtube_connector_deduplicates(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(
-        YouTubeLiveConnector,
-        "_collect_for_channel",
-        fake_collect,
-    )
-    monkeypatch.setattr(
-        "genti.connectors.youtube.aiohttp.ClientSession",
-        lambda timeout=None: DummySession(),
-    )
+    monkeypatch.setattr(YouTubeLiveConnector, "_collect_for_channel_sync", fake_collect_sync)
 
     async def run_fetch():
         return await connector.fetch()
@@ -85,6 +72,42 @@ async def test_youtube_search_handles_forbidden(caplog):
     caplog.set_level("ERROR")
 
     items, error_message = await connector._search(ForbiddenSession(), "chan", "live")
+
+    assert items == []
+    assert error_message == "Превышена квота YouTube API — обновление временно недоступно."
+    assert any(
+        "YouTube search failed with 403 for channel=chan type=live: quotaExceeded"
+        in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_youtube_search_sync_handles_forbidden(monkeypatch, caplog):
+    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
+
+    payload = json.dumps(
+        {
+            "error": {
+                "message": "quotaExceeded",
+                "errors": [{"reason": "quotaExceeded"}],
+            }
+        }
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):  # noqa: ARG001 - required signature
+        raise urllib_error.HTTPError(
+            url="https://example.test",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(payload),
+        )
+
+    monkeypatch.setattr("genti.connectors.youtube.urllib_request.urlopen", fake_urlopen)
+
+    caplog.set_level("ERROR")
+
+    items, error_message = connector._search_sync("chan", "live")
 
     assert items == []
     assert error_message == "Превышена квота YouTube API — обновление временно недоступно."
