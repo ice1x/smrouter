@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any, Iterable, List, Set, Tuple
+import socket
+from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 import aiohttp
 
@@ -26,6 +31,7 @@ class YouTubeLiveConnector:
         *,
         show_upcoming: bool = True,
         session_timeout: float = 30.0,
+        http_mode: Literal["sync", "async"] = "sync",
         logger: logging.Logger | None = None,
     ) -> None:
         if not api_key:
@@ -36,14 +42,33 @@ class YouTubeLiveConnector:
             raise ValueError("At least one YouTube channel identifier must be configured")
         self._show_upcoming = show_upcoming
         self._session_timeout = session_timeout
+        if http_mode not in {"sync", "async"}:
+            raise ValueError("http_mode must be 'sync' or 'async'")
+        self._http_mode = http_mode
         self._logger = logger or logging.getLogger(__name__)
 
     async def fetch(self) -> LiveFeedState:
+        if self._http_mode == "async":
+            results = await self._fetch_async()
+        else:
+            results = await self._fetch_sync()
+
+        return self._aggregate_results(results)
+
+    async def _fetch_async(self) -> Sequence[Tuple[List[Video], List[Video], List[str]] | Exception]:
         timeout = aiohttp.ClientTimeout(total=self._session_timeout)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             tasks = [self._collect_for_channel(session, channel_id) for channel_id in self._channel_ids]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _fetch_sync(self) -> Sequence[Tuple[List[Video], List[Video], List[str]] | Exception]:
+        tasks = [self._collect_for_channel_sync(channel_id) for channel_id in self._channel_ids]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _aggregate_results(
+        self,
+        results: Sequence[Tuple[List[Video], List[Video], List[str]] | Exception],
+    ) -> LiveFeedState:
         live_entries: List[Video] = []
         upcoming_entries: List[Video] = []
         errors: Set[str] = set()
@@ -63,6 +88,25 @@ class YouTubeLiveConnector:
             upcoming=self._deduplicate(upcoming_entries),
             errors=sorted(errors),
         )
+
+    async def _collect_for_channel_sync(self, channel_id: str) -> Tuple[List[Video], List[Video], List[str]]:
+        live_items, live_error = await asyncio.to_thread(self._search_sync, channel_id, "live")
+        upcoming_items: List[dict] = []
+        upcoming_error: str | None = None
+        if self._show_upcoming:
+            upcoming_items, upcoming_error = await asyncio.to_thread(
+                self._search_sync,
+                channel_id,
+                "upcoming",
+            )
+
+        errors: List[str] = []
+        if live_error:
+            errors.append(live_error)
+        if upcoming_error:
+            errors.append(upcoming_error)
+
+        return self._parse_items(live_items), self._parse_items(upcoming_items), errors
 
     async def _collect_for_channel(
         self, session: aiohttp.ClientSession, channel_id: str
@@ -86,10 +130,8 @@ class YouTubeLiveConnector:
 
         return self._parse_items(live_items), self._parse_items(upcoming_items), errors
 
-    async def _search(
-        self, session: aiohttp.ClientSession, channel_id: str, event_type: str
-    ) -> Tuple[List[dict], str | None]:
-        params = {
+    def _build_params(self, channel_id: str, event_type: str) -> dict[str, Any]:
+        return {
             "part": "snippet",
             "channelId": channel_id,
             "eventType": event_type,
@@ -98,6 +140,11 @@ class YouTubeLiveConnector:
             "maxResults": 10,
             "key": self._api_key,
         }
+
+    async def _search(
+        self, session: aiohttp.ClientSession, channel_id: str, event_type: str
+    ) -> Tuple[List[dict], str | None]:
+        params = self._build_params(channel_id, event_type)
         self._logger.debug(
             "Requesting YouTube search: channel=%s type=%s cost=%s units",
             channel_id,
@@ -135,16 +182,59 @@ class YouTubeLiveConnector:
             )
             return [], "Ошибка сети при обращении к YouTube API."
 
-        items = payload.get("items")
-        if not isinstance(items, list):
-            self._logger.warning(
-                "Unexpected YouTube response structure for channel %s cost=%s units: %s",
+        return self._interpret_payload(channel_id, payload)
+
+    def _search_sync(self, channel_id: str, event_type: str) -> Tuple[List[dict], str | None]:
+        params = self._build_params(channel_id, event_type)
+        self._logger.debug(
+            "Requesting YouTube search: channel=%s type=%s cost=%s units",
+            channel_id,
+            event_type,
+            _YOUTUBE_SEARCH_COST_UNITS,
+        )
+        url = f"{_YOUTUBE_SEARCH_URL}?{urllib_parse.urlencode(params)}"
+        request = urllib_request.Request(url)
+        try:
+            with urllib_request.urlopen(request, timeout=20) as response:
+                payload = json.load(response)
+        except urllib_error.HTTPError as exc:
+            detail = self._extract_error_detail_sync(exc)
+            self._logger.error(
+                "YouTube search failed with %s for channel=%s type=%s cost=%s units: %s",
+                exc.code,
                 channel_id,
+                event_type,
                 _YOUTUBE_SEARCH_COST_UNITS,
-                payload,
+                detail,
             )
-            return [], "Неожиданный ответ YouTube API."
-        return items, None
+            return [], self._user_error_message(exc.code, detail)
+        except urllib_error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                self._logger.warning(
+                    "YouTube search timed out: channel=%s type=%s cost=%s units",
+                    channel_id,
+                    event_type,
+                    _YOUTUBE_SEARCH_COST_UNITS,
+                )
+                return [], "Таймаут запроса к YouTube API."
+            self._logger.exception(
+                "YouTube search failed: channel=%s type=%s cost=%s units",
+                channel_id,
+                event_type,
+                _YOUTUBE_SEARCH_COST_UNITS,
+            )
+            return [], "Ошибка сети при обращении к YouTube API."
+        except (TimeoutError, socket.timeout):
+            self._logger.warning(
+                "YouTube search timed out: channel=%s type=%s cost=%s units",
+                channel_id,
+                event_type,
+                _YOUTUBE_SEARCH_COST_UNITS,
+            )
+            return [], "Таймаут запроса к YouTube API."
+
+        return self._interpret_payload(channel_id, payload)
 
     async def _extract_error_detail(self, response: aiohttp.ClientResponse) -> str:
         try:
@@ -155,6 +245,32 @@ class YouTubeLiveConnector:
                 return text
             return response.reason or str(response.status)
 
+        detail = self._error_detail_from_payload(payload)
+        if detail:
+            return detail
+        return response.reason or str(response.status)
+
+    def _extract_error_detail_sync(self, error: urllib_error.HTTPError) -> str:
+        try:
+            data = error.read()
+        except Exception:  # pragma: no cover - extremely defensive
+            data = b""
+
+        if data:
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                text = data.decode("utf-8", errors="ignore").strip()
+                if text:
+                    return text[:200]
+            else:
+                detail = self._error_detail_from_payload(payload)
+                if detail:
+                    return detail
+
+        return error.reason or str(error.code)
+
+    def _error_detail_from_payload(self, payload: Any) -> str | None:
         if isinstance(payload, dict):
             error = payload.get("error")
             if isinstance(error, dict):
@@ -168,7 +284,21 @@ class YouTubeLiveConnector:
                         reason = first.get("reason")
                         if isinstance(reason, str) and reason:
                             return reason
-        return response.reason or str(response.status)
+        return None
+
+    def _interpret_payload(self, channel_id: str, payload: Any) -> Tuple[List[dict], str | None]:
+        items: Any = None
+        if isinstance(payload, dict):
+            items = payload.get("items")
+        if not isinstance(items, list):
+            self._logger.warning(
+                "Unexpected YouTube response structure for channel %s cost=%s units: %s",
+                channel_id,
+                _YOUTUBE_SEARCH_COST_UNITS,
+                payload,
+            )
+            return [], "Неожиданный ответ YouTube API."
+        return items, None
 
     def _user_error_message(self, status: int, detail: str | None) -> str:
         detail = detail or ""
