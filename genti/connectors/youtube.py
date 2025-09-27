@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import socket
-from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
+from typing import Any, Iterable, List, Literal, Mapping, Sequence, Set, Tuple
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -19,6 +19,8 @@ from genti.models import LiveFeedState, Video
 _YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 _YOUTUBE_SEARCH_COST_UNITS = 100
 _YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v="
+_YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+_YOUTUBE_VIDEOS_COST_UNITS = 5
 
 
 class YouTubeLiveConnector:
@@ -106,7 +108,22 @@ class YouTubeLiveConnector:
         if upcoming_error:
             errors.append(upcoming_error)
 
-        return self._parse_items(live_items), self._parse_items(upcoming_items), errors
+        live_ids = self._video_ids_from_items(live_items)
+        upcoming_ids = self._video_ids_from_items(upcoming_items)
+
+        live_counts: dict[str, int] = {}
+        if live_ids:
+            live_counts = await self._fetch_viewer_counts_sync(live_ids)
+
+        upcoming_counts: dict[str, int] = {}
+        if upcoming_ids:
+            upcoming_counts = await self._fetch_viewer_counts_sync(upcoming_ids)
+
+        return (
+            self._parse_items(live_items, viewer_counts=live_counts),
+            self._parse_items(upcoming_items, viewer_counts=upcoming_counts),
+            errors,
+        )
 
     async def _collect_for_channel(
         self, session: aiohttp.ClientSession, channel_id: str
@@ -128,7 +145,22 @@ class YouTubeLiveConnector:
         if upcoming_error:
             errors.append(upcoming_error)
 
-        return self._parse_items(live_items), self._parse_items(upcoming_items), errors
+        live_ids = self._video_ids_from_items(live_items)
+        upcoming_ids = self._video_ids_from_items(upcoming_items)
+
+        live_counts: dict[str, int] = {}
+        if live_ids:
+            live_counts = await self._fetch_viewer_counts_async(session, live_ids)
+
+        upcoming_counts: dict[str, int] = {}
+        if upcoming_ids:
+            upcoming_counts = await self._fetch_viewer_counts_async(session, upcoming_ids)
+
+        return (
+            self._parse_items(live_items, viewer_counts=live_counts),
+            self._parse_items(upcoming_items, viewer_counts=upcoming_counts),
+            errors,
+        )
 
     def _build_params(self, channel_id: str, event_type: str) -> dict[str, Any]:
         return {
@@ -311,7 +343,12 @@ class YouTubeLiveConnector:
             return f"Ошибка YouTube API: {detail}"
         return f"Ошибка YouTube API (код {status})."
 
-    def _parse_items(self, items: Iterable[dict]) -> List[Video]:
+    def _parse_items(
+        self,
+        items: Iterable[dict],
+        *,
+        viewer_counts: Mapping[str, int] | None = None,
+    ) -> List[Video]:
         parsed: List[Video] = []
         for item in items:
             video_id = self._extract_video_id(item)
@@ -320,15 +357,158 @@ class YouTubeLiveConnector:
             snippet = item.get("snippet") or {}
             title = snippet.get("title") or "Без названия"
             channel_title = snippet.get("channelTitle") or "Channel"
+            viewer_count = viewer_counts.get(video_id) if viewer_counts else None
             parsed.append(
                 Video(
                     video_id=video_id,
                     title=title,
                     channel_title=channel_title,
                     url=f"{_YOUTUBE_VIDEO_URL}{video_id}",
+                    viewer_count=viewer_count,
                 )
             )
         return parsed
+
+    def _video_ids_from_items(self, items: Iterable[dict]) -> List[str]:
+        ids: List[str] = []
+        for item in items:
+            video_id = self._extract_video_id(item)
+            if video_id:
+                ids.append(video_id)
+        return ids
+
+    async def _fetch_viewer_counts_async(
+        self, session: aiohttp.ClientSession, video_ids: Sequence[str]
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for chunk in self._chunk_ids(video_ids):
+            params = self._build_videos_params(chunk)
+            self._logger.info(
+                "Requesting YouTube videos: ids=%s cost=%s units",
+                ",".join(chunk),
+                _YOUTUBE_VIDEOS_COST_UNITS,
+            )
+            try:
+                async with session.get(_YOUTUBE_VIDEOS_URL, params=params, timeout=20) as response:
+                    if response.status >= 400:
+                        detail = await self._extract_error_detail(response)
+                        self._logger.warning(
+                            "YouTube videos failed with %s for ids=%s cost=%s units: %s",
+                            response.status,
+                            ",".join(chunk),
+                            _YOUTUBE_VIDEOS_COST_UNITS,
+                            detail,
+                        )
+                        continue
+                    payload = await response.json()
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "YouTube videos timed out: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                continue
+            except aiohttp.ClientError:
+                self._logger.exception(
+                    "YouTube videos failed: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                continue
+
+            counts.update(self._extract_viewer_counts(payload))
+
+        return counts
+
+    async def _fetch_viewer_counts_sync(self, video_ids: Sequence[str]) -> dict[str, int]:
+        return await asyncio.to_thread(self._fetch_viewer_counts_via_sync_http, video_ids)
+
+    def _fetch_viewer_counts_via_sync_http(self, video_ids: Sequence[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for chunk in self._chunk_ids(video_ids):
+            params = self._build_videos_params(chunk)
+            self._logger.info(
+                "Requesting YouTube videos: ids=%s cost=%s units",
+                ",".join(chunk),
+                _YOUTUBE_VIDEOS_COST_UNITS,
+            )
+            url = f"{_YOUTUBE_VIDEOS_URL}?{urllib_parse.urlencode(params)}"
+            request = urllib_request.Request(url)
+            try:
+                with urllib_request.urlopen(request, timeout=20) as response:
+                    payload = json.load(response)
+            except urllib_error.HTTPError as exc:
+                detail = self._extract_error_detail_sync(exc)
+                self._logger.warning(
+                    "YouTube videos failed with %s for ids=%s cost=%s units: %s",
+                    exc.code,
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                    detail,
+                )
+                continue
+            except urllib_error.URLError as exc:
+                reason = exc.reason
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    self._logger.warning(
+                        "YouTube videos timed out: ids=%s cost=%s units",
+                        ",".join(chunk),
+                        _YOUTUBE_VIDEOS_COST_UNITS,
+                    )
+                else:
+                    self._logger.exception(
+                        "YouTube videos failed: ids=%s cost=%s units",
+                        ",".join(chunk),
+                        _YOUTUBE_VIDEOS_COST_UNITS,
+                    )
+                continue
+            except (TimeoutError, socket.timeout):
+                self._logger.warning(
+                    "YouTube videos timed out: ids=%s cost=%s units",
+                    ",".join(chunk),
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                )
+                continue
+
+            counts.update(self._extract_viewer_counts(payload))
+
+        return counts
+
+    def _build_videos_params(self, video_ids: Sequence[str]) -> dict[str, Any]:
+        return {
+            "part": "liveStreamingDetails",
+            "id": ",".join(video_ids),
+            "key": self._api_key,
+        }
+
+    def _chunk_ids(self, video_ids: Sequence[str], chunk_size: int = 50) -> List[List[str]]:
+        return [list(video_ids[i : i + chunk_size]) for i in range(0, len(video_ids), chunk_size)]
+
+    def _extract_viewer_counts(self, payload: Any) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        if not isinstance(payload, dict):
+            return counts
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return counts
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            video_id = item.get("id")
+            if not isinstance(video_id, str) or not video_id:
+                continue
+            details = item.get("liveStreamingDetails")
+            if not isinstance(details, dict):
+                continue
+            viewers = details.get("concurrentViewers")
+            if isinstance(viewers, str):
+                try:
+                    counts[video_id] = int(viewers)
+                except ValueError:
+                    continue
+            elif isinstance(viewers, int):
+                counts[video_id] = viewers
+        return counts
 
     def _extract_video_id(self, item: dict) -> str | None:
         identifier = item.get("id")

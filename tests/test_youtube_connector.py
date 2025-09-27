@@ -35,6 +35,54 @@ def test_youtube_connector_deduplicates(monkeypatch):
     assert [video.video_id for video in state.upcoming] == ["v2"]
 
 
+def test_parse_items_uses_viewer_counts():
+    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
+
+    items = [
+        {
+            "id": {"videoId": "stream1"},
+            "snippet": {"title": "Stream", "channelTitle": "Channel"},
+        }
+    ]
+
+    videos = connector._parse_items(items, viewer_counts={"stream1": 123})
+
+    assert videos == [
+        Video(
+            video_id="stream1",
+            title="Stream",
+            channel_title="Channel",
+            url="https://www.youtube.com/watch?v=stream1",
+            viewer_count=123,
+        )
+    ]
+
+
+def test_extract_viewer_counts_parses_payload():
+    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
+
+    payload = {
+        "items": [
+            {
+                "id": "stream1",
+                "liveStreamingDetails": {"concurrentViewers": "42"},
+            },
+            {
+                "id": "stream2",
+                "liveStreamingDetails": {"concurrentViewers": 17},
+            },
+            {
+                "id": "stream3",
+                "liveStreamingDetails": {},
+            },
+        ]
+    }
+
+    counts = connector._extract_viewer_counts(payload)
+
+    assert counts == {"stream1": 42, "stream2": 17}
+
+
 class ForbiddenResponse:
     def __init__(self):
         self.status = 403
