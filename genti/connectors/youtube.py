@@ -145,7 +145,7 @@ class YouTubeLiveConnector:
         self, session: aiohttp.ClientSession, channel_id: str, event_type: str
     ) -> Tuple[List[dict], str | None]:
         params = self._build_params(channel_id, event_type)
-        self._logger.debug(
+        self._logger.info(
             "Requesting YouTube search: channel=%s type=%s cost=%s units",
             channel_id,
             event_type,
@@ -186,7 +186,7 @@ class YouTubeLiveConnector:
 
     def _search_sync(self, channel_id: str, event_type: str) -> Tuple[List[dict], str | None]:
         params = self._build_params(channel_id, event_type)
-        self._logger.debug(
+        self._logger.info(
             "Requesting YouTube search: channel=%s type=%s cost=%s units",
             channel_id,
             event_type,
