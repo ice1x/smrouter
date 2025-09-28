@@ -186,7 +186,7 @@ class YouTubeLiveConnector:
         for channel_id, result in zip(self._channel_ids, results):
             if isinstance(result, Exception):
                 self._logger.warning("Failed to fetch channel %s", channel_id, exc_info=result)
-                errors.add("Не удалось обновить данные с YouTube API.")
+                errors.add("Unable to refresh data from the YouTube API.")
                 continue
             live, upcoming, channel_errors = result
             live_entries.extend(live)
@@ -285,14 +285,14 @@ class YouTubeLiveConnector:
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Таймаут запроса к YouTube API."
+            return None, "YouTube API request timed out."
         except aiohttp.ClientError:
             self._logger.exception(
                 "YouTube channels failed: channel=%s cost=%s units",
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Ошибка сети при обращении к YouTube API."
+            return None, "Network error while contacting the YouTube API."
 
         playlist_id = self._extract_uploads_playlist(payload)
         if not playlist_id:
@@ -301,7 +301,7 @@ class YouTubeLiveConnector:
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Не удалось получить список загрузок канала."
+            return None, "Unable to fetch the channel uploads list."
 
         self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
@@ -344,20 +344,20 @@ class YouTubeLiveConnector:
                     channel_id,
                     _YOUTUBE_CHANNELS_COST_UNITS,
                 )
-                return None, "Таймаут запроса к YouTube API."
+                return None, "YouTube API request timed out."
             self._logger.exception(
                 "YouTube channels failed: channel=%s cost=%s units",
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Ошибка сети при обращении к YouTube API."
+            return None, "Network error while contacting the YouTube API."
         except (TimeoutError, socket.timeout):
             self._logger.warning(
                 "YouTube channels timed out: channel=%s cost=%s units",
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Таймаут запроса к YouTube API."
+            return None, "YouTube API request timed out."
 
         playlist_id = self._extract_uploads_playlist(payload)
         if not playlist_id:
@@ -366,7 +366,7 @@ class YouTubeLiveConnector:
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Не удалось получить список загрузок канала."
+            return None, "Unable to fetch the channel uploads list."
 
         self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
@@ -404,14 +404,14 @@ class YouTubeLiveConnector:
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Таймаут запроса к YouTube API."
+            return [], "YouTube API request timed out."
         except aiohttp.ClientError:
             self._logger.exception(
                 "YouTube playlistItems failed: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Ошибка сети при обращении к YouTube API."
+            return [], "Network error while contacting the YouTube API."
 
         return self._extract_playlist_video_ids(payload), None
 
@@ -450,20 +450,20 @@ class YouTubeLiveConnector:
                     playlist_id,
                     _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                 )
-                return [], "Таймаут запроса к YouTube API."
+                return [], "YouTube API request timed out."
             self._logger.exception(
                 "YouTube playlistItems failed: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Ошибка сети при обращении к YouTube API."
+            return [], "Network error while contacting the YouTube API."
         except (TimeoutError, socket.timeout):
             self._logger.warning(
                 "YouTube playlistItems timed out: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Таймаут запроса к YouTube API."
+            return [], "YouTube API request timed out."
 
         return self._extract_playlist_video_ids(payload), None
 
@@ -499,7 +499,7 @@ class YouTubeLiveConnector:
                     ",".join(chunk),
                     _YOUTUBE_VIDEOS_COST_UNITS,
                 )
-                error_message = error_message or "Таймаут запроса к YouTube API."
+                error_message = error_message or "YouTube API request timed out."
                 continue
             except aiohttp.ClientError:
                 self._logger.exception(
@@ -507,7 +507,7 @@ class YouTubeLiveConnector:
                     ",".join(chunk),
                     _YOUTUBE_VIDEOS_COST_UNITS,
                 )
-                error_message = error_message or "Ошибка сети при обращении к YouTube API."
+                error_message = error_message or "Network error while contacting the YouTube API."
                 continue
 
             items.extend(self._extract_video_items(payload))
@@ -548,14 +548,14 @@ class YouTubeLiveConnector:
                         ",".join(chunk),
                         _YOUTUBE_VIDEOS_COST_UNITS,
                     )
-                    error_message = error_message or "Таймаут запроса к YouTube API."
+                    error_message = error_message or "YouTube API request timed out."
                 else:
                     self._logger.exception(
                         "YouTube videos failed: ids=%s cost=%s units",
                         ",".join(chunk),
                         _YOUTUBE_VIDEOS_COST_UNITS,
                     )
-                    error_message = error_message or "Ошибка сети при обращении к YouTube API."
+                    error_message = error_message or "Network error while contacting the YouTube API."
                 continue
             except (TimeoutError, socket.timeout):
                 self._logger.warning(
@@ -563,7 +563,7 @@ class YouTubeLiveConnector:
                     ",".join(chunk),
                     _YOUTUBE_VIDEOS_COST_UNITS,
                 )
-                error_message = error_message or "Таймаут запроса к YouTube API."
+                error_message = error_message or "YouTube API request timed out."
                 continue
 
             items.extend(self._extract_video_items(payload))
@@ -624,12 +624,12 @@ class YouTubeLiveConnector:
         detail = detail or ""
         detail_lower = detail.lower()
         if status == 403 and "quota" in detail_lower:
-            return "Превышена квота YouTube API — обновление временно недоступно."
+            return "YouTube API quota exceeded—updates are temporarily unavailable."
         if status == 401:
-            return "Недействительный ключ YouTube API."
+            return "Invalid YouTube API key."
         if detail:
-            return f"Ошибка YouTube API: {detail}"
-        return f"Ошибка YouTube API (код {status})."
+            return f"YouTube API error: {detail}"
+        return f"YouTube API error (status {status})."
 
     def _build_videos_params(self, video_ids: Sequence[str]) -> dict[str, Any]:
         return {
@@ -707,7 +707,7 @@ class YouTubeLiveConnector:
             status = snippet.get("liveBroadcastContent")
             if status not in {"live", "upcoming"}:
                 continue
-            title = snippet.get("title") or "Без названия"
+            title = snippet.get("title") or "Untitled"
             channel_title = snippet.get("channelTitle") or "Channel"
             viewer_count = self._extract_viewer_count(item)
             video = Video(

@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("telegram")
 
 from genti.models import LiveFeedState, Video
+from genti.templates import TELEGRAM_TEMPLATES
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 
 
@@ -38,10 +39,9 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
 
     first_update, second_update = asyncio.run(run_updates())
 
-    assert "⭐️ YOUTUBE ⭐️" in first_update.dashboard_text
+    assert TELEGRAM_TEMPLATES.dashboard_header in first_update.dashboard_text
     assert "CH\\*1\\* \\[321\\]" in first_update.dashboard_text
     assert "\n https://youtu.be/vid1" in first_update.dashboard_text
-    assert "Прямо сейчас" not in first_update.dashboard_text
     assert first_update.new_live_messages == []
     assert second_update.new_live_messages == []
 
@@ -51,16 +51,20 @@ def test_transformation_handles_empty_lists():
     state = LiveFeedState(live=[], upcoming=[])
 
     update = asyncio.run(transformation.transform(state))
-    assert "⭐️ YOUTUBE ⭐️" in update.dashboard_text
-    assert "(пусто)" in update.dashboard_text
+    assert TELEGRAM_TEMPLATES.dashboard_header in update.dashboard_text
+    assert TELEGRAM_TEMPLATES.empty_without_errors in update.dashboard_text
     assert update.new_live_messages == []
 
 
 def test_transformation_reports_errors():
     transformation = LiveDashboardTransformation()
-    state = LiveFeedState(live=[], upcoming=[], errors=["Превышена квота YouTube API — обновление временно недоступно."])
+    state = LiveFeedState(
+        live=[],
+        upcoming=[],
+        errors=["YouTube API quota exceeded—updates are temporarily unavailable."],
+    )
 
     update = asyncio.run(transformation.transform(state))
-    assert "данные недоступны" in update.dashboard_text
+    assert TELEGRAM_TEMPLATES.empty_with_errors in update.dashboard_text
     assert "⚠️" not in update.dashboard_text
     assert "ℹ️" not in update.dashboard_text

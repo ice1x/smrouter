@@ -28,6 +28,7 @@ from genti.connectors.youtube import YouTubeLiveConnector
 from genti.exceptions import FatalPipelineError
 from genti.platform import Pipeline, PipelineConfig
 from genti.transformations.live_dashboard import LiveDashboardTransformation
+from genti.templates import TELEGRAM_TEMPLATES
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -64,11 +65,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat,
         )
         if update.message is not None:
-            await update.message.reply_text("Доступ к этому боту ограничен владельцем.")
+            await update.message.reply_text(TELEGRAM_TEMPLATES.unauthorized_start)
         return
 
     await update.message.reply_text(
-        "Ок! Дашборд будет поддерживаться автоматически. Закрепите этот пост, если он не закрепился сам."
+        TELEGRAM_TEMPLATES.start_response
     )
 
 
@@ -82,7 +83,8 @@ def _validate_environment() -> None:
     if not all(missing.values()):
         logger.error("Missing required environment configuration: %s", missing)
         raise SystemExit(
-            "Не заданы переменные окружения: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, YT_API_KEY, WHITELIST"
+            "The following environment variables must be configured: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, "
+            "YT_API_KEY, WHITELIST"
         )
 
 
@@ -90,7 +92,7 @@ async def main() -> None:
     _validate_environment()
 
     logger.info(
-        "Запускаем платформу: whitelist=%s poll_seconds=%s show_upcoming=%s tg_poll_interval=%s tg_timeout=%s",
+        "Starting platform: whitelist=%s poll_seconds=%s show_upcoming=%s tg_poll_interval=%s tg_timeout=%s",
         ",".join(WHITELIST),
         POLL_SECONDS,
         SHOW_UPCOMING,

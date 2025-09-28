@@ -122,7 +122,7 @@ async def test_youtube_search_handles_forbidden(caplog):
     items, error_message = await connector._search(ForbiddenSession(), "chan", "live")
 
     assert items == []
-    assert error_message == "Превышена квота YouTube API — обновление временно недоступно."
+    assert error_message == "YouTube API quota exceeded—updates are temporarily unavailable."
     assert any(
         "YouTube search failed with 403 for channel=chan type=live: quotaExceeded"
         in record.getMessage()
@@ -158,7 +158,7 @@ def test_youtube_search_sync_handles_forbidden(monkeypatch, caplog):
     items, error_message = connector._search_sync("chan", "live")
 
     assert items == []
-    assert error_message == "Превышена квота YouTube API — обновление временно недоступно."
+    assert error_message == "YouTube API quota exceeded—updates are temporarily unavailable."
     assert any(
         "YouTube search failed with 403 for channel=chan type=live: quotaExceeded"
         in record.getMessage()

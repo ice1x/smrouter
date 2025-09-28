@@ -10,6 +10,7 @@ from telegram.ext import Application
 
 from genti.exceptions import FatalPipelineError
 from genti.models import DashboardUpdate
+from genti.templates import TELEGRAM_TEMPLATES
 
 
 ChatId = Union[int, str]
@@ -55,7 +56,7 @@ class TelegramDashboardConnector:
         except BadRequest as exc:
             if exc.message and "chat not found" in exc.message.lower():
                 raise FatalPipelineError(
-                    "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
+                    "Telegram channel is unavailable: verify the channel identifier and bot permissions"
                 ) from exc
             raise
 
@@ -72,7 +73,7 @@ class TelegramDashboardConnector:
                 message = await self._application.bot.edit_message_text(
                     chat_id=await self._target_chat_id(),
                     message_id=self._dashboard_message_id,
-                    text="инициализация…",
+                    text=TELEGRAM_TEMPLATES.initialization_message,
                     parse_mode=self._parse_mode,
                     disable_web_page_preview=True,
                 )
@@ -88,14 +89,14 @@ class TelegramDashboardConnector:
         try:
             message = await self._application.bot.send_message(
                 chat_id=await self._target_chat_id(),
-                text="инициализация…",
+                text=TELEGRAM_TEMPLATES.initialization_message,
                 parse_mode=self._parse_mode,
                 disable_web_page_preview=True,
             )
         except BadRequest as exc:
             if exc.message and "chat not found" in exc.message.lower():
                 raise FatalPipelineError(
-                    "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
+                    "Telegram channel is unavailable: verify the channel identifier and bot permissions"
                 ) from exc
             raise
         self._dashboard_message_id = message.message_id
@@ -160,6 +161,6 @@ class TelegramDashboardConnector:
         except BadRequest as exc:
             if exc.message and "chat not found" in exc.message.lower():
                 raise FatalPipelineError(
-                    "Телеграм-канал недоступен: проверьте идентификатор канала и права бота"
+                    "Telegram channel is unavailable: verify the channel identifier and bot permissions"
                 ) from exc
             raise

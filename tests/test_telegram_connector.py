@@ -84,7 +84,7 @@ async def test_dashboard_creation_raises_clear_error_on_missing_channel():
         generated_at=datetime.now(timezone.utc),
     )
 
-    with pytest.raises(FatalPipelineError, match="Телеграм-канал недоступен"):
+    with pytest.raises(FatalPipelineError, match="Telegram channel is unavailable"):
         await connector.push(update)
 
 
@@ -123,7 +123,7 @@ async def test_send_message_propagates_channel_error():
     application = SimpleNamespace(bot=bot)
     connector = TelegramDashboardConnector(application=application, channel_id="123")
 
-    with pytest.raises(FatalPipelineError, match="Телеграм-канал недоступен"):
+    with pytest.raises(FatalPipelineError, match="Telegram channel is unavailable"):
         await connector._send_message("payload")
 
 
@@ -135,7 +135,7 @@ async def test_reuses_existing_pinned_dashboard():
     connector = TelegramDashboardConnector(application=application, channel_id="123")
 
     update = DashboardUpdate(
-        dashboard_text="новый текст",
+        dashboard_text="new text",
         new_live_messages=[],
         state=LiveFeedState(live=[], upcoming=[]),
         generated_at=datetime.now(timezone.utc),
