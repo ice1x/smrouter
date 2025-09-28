@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 import signal
 from contextlib import suppress
 from typing import Awaitable, Callable, Dict
@@ -10,80 +9,45 @@ from typing import Awaitable, Callable, Dict
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+from genti.config import (
+    ALLOWED_ACTOR_IDS,
+    LOG_LEVEL,
+    MAX_CONSECUTIVE_FAILURES,
+    POLL_SECONDS,
+    SHOW_UPCOMING,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_ID,
+    TELEGRAM_UPDATES_POLL_INTERVAL,
+    TELEGRAM_UPDATES_TIMEOUT,
+    WHITELIST,
+    YT_API_KEY,
+)
 from genti.connectors.telegram import TelegramDashboardConnector
 from genti.connectors.youtube import YouTubeLiveConnector
 from genti.exceptions import FatalPipelineError
 from genti.platform import Pipeline, PipelineConfig
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-
-def _read_positive_float_env(name: str, default: float) -> float:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError:
-        logger.warning("Invalid value for %s=%r, falling back to %s", name, raw_value, default)
-        return default
-    if value < 0:
-        logger.warning("Negative value for %s=%s is not allowed; using %s", name, value, default)
-        return default
-    return value
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-YT_API_KEY = os.getenv("YT_API_KEY")
-WHITELIST = [c.strip() for c in os.getenv("WHITELIST", "").split(",") if c.strip()]
-TELEGRAM_ALLOWED_USER_IDS = [
-    c.strip() for c in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if c.strip()
-]
-_ALLOWED_ACTOR_IDS = set(TELEGRAM_ALLOWED_USER_IDS)
-if TELEGRAM_CHANNEL_ID:
-    normalized_channel_id = TELEGRAM_CHANNEL_ID.strip()
-    if normalized_channel_id:
-        _ALLOWED_ACTOR_IDS.add(normalized_channel_id)
-        if normalized_channel_id.lstrip("-").isdigit():
-            _ALLOWED_ACTOR_IDS.add(str(int(normalized_channel_id)))
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))
-SHOW_UPCOMING = os.getenv("SHOW_UPCOMING", "0") == "1"
-MAX_CONSECUTIVE_FAILURES = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "4"))
-TELEGRAM_UPDATES_POLL_INTERVAL = _read_positive_float_env(
-    "TELEGRAM_UPDATES_POLL_INTERVAL", float(POLL_SECONDS)
-)
-_default_updates_timeout = min(float(POLL_SECONDS), 50.0)
-TELEGRAM_UPDATES_TIMEOUT = _read_positive_float_env(
-    "TELEGRAM_UPDATES_TIMEOUT", _default_updates_timeout
-)
-if TELEGRAM_UPDATES_TIMEOUT > 50.0:
-    logger.warning(
-        "TELEGRAM_UPDATES_TIMEOUT=%s exceeds Telegram API limit (50s); clamping to 50s",
-        TELEGRAM_UPDATES_TIMEOUT,
-    )
-    TELEGRAM_UPDATES_TIMEOUT = 50.0
-
-
 def _is_actor_allowed(update: Update) -> bool:
-    if not _ALLOWED_ACTOR_IDS:
+    if not ALLOWED_ACTOR_IDS:
         return False
 
     user = getattr(update, "effective_user", None)
     if user is not None:
         user_id = getattr(user, "id", None)
-        if user_id is not None and str(user_id) in _ALLOWED_ACTOR_IDS:
+        if user_id is not None and str(user_id) in ALLOWED_ACTOR_IDS:
             return True
 
     chat = getattr(update, "effective_chat", None)
     if chat is not None:
         chat_id = getattr(chat, "id", None)
-        if chat_id is not None and str(chat_id) in _ALLOWED_ACTOR_IDS:
+        if chat_id is not None and str(chat_id) in ALLOWED_ACTOR_IDS:
             return True
 
     return False
