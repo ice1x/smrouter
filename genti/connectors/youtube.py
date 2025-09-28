@@ -6,7 +6,11 @@ import asyncio
 import json
 import logging
 import socket
+import threading
+from contextlib import suppress
+from pathlib import Path
 from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
+from uuid import uuid4
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -14,6 +18,82 @@ from urllib import request as urllib_request
 import aiohttp
 
 from genti.models import LiveFeedState, Video
+
+
+class YouTubeUploadsCache:
+    """Persist uploads playlist identifiers for YouTube channels."""
+
+    def __init__(self, cache_path: Path, *, logger: logging.Logger | None = None) -> None:
+        self._cache_path = cache_path
+        self._logger = logger or logging.getLogger(__name__)
+        self._cache_lock = threading.Lock()
+        self._cache: dict[str, str] = {}
+        self._loaded = False
+
+    def get(self, channel_id: str) -> str | None:
+        self._ensure_loaded()
+        with self._cache_lock:
+            return self._cache.get(channel_id)
+
+    def snapshot(self) -> dict[str, str]:
+        self._ensure_loaded()
+        with self._cache_lock:
+            return dict(self._cache)
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        with self._cache_lock:
+            if self._loaded:
+                return
+            self._cache = self._load_cache_unlocked()
+            self._loaded = True
+
+    def _load_cache_unlocked(self) -> dict[str, str]:
+        try:
+            data = self._cache_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            self._logger.exception("Failed to read YouTube uploads cache", exc_info=True)
+            return {}
+
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            self._logger.warning("Invalid YouTube uploads cache contents; ignoring")
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        cache: dict[str, str] = {}
+        for key, value in payload.items():
+            if isinstance(key, str) and isinstance(value, str) and key and value:
+                cache[key] = value
+        return cache
+
+    def _remember_uploads_playlist(self, channel_id: str, playlist_id: str) -> None:
+        self._ensure_loaded()
+        with self._cache_lock:
+            existing = self._cache.get(channel_id)
+            if existing == playlist_id:
+                return
+            self._cache[channel_id] = playlist_id
+            self._persist_cache_locked()
+
+    def _persist_cache_locked(self) -> None:
+        cache_dir = self._cache_path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(self._cache, ensure_ascii=False, sort_keys=True)
+        temp_path = cache_dir / f"{self._cache_path.name}.{uuid4().hex}.tmp"
+
+        try:
+            temp_path.write_text(serialized, encoding="utf-8")
+            temp_path.replace(self._cache_path)
+        finally:
+            with suppress(FileNotFoundError):
+                temp_path.unlink()
 
 
 _YOUTUBE_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
@@ -37,6 +117,7 @@ class YouTubeLiveConnector:
         session_timeout: float = 30.0,
         http_mode: Literal["sync", "async"] = "sync",
         logger: logging.Logger | None = None,
+        uploads_cache_path: str | Path | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("YouTube API key must be provided")
@@ -51,6 +132,11 @@ class YouTubeLiveConnector:
         self._http_mode = http_mode
         self._logger = logger or logging.getLogger(__name__)
         self._uploads_cache: dict[str, str] = {}
+        self._uploads_cache_storage: YouTubeUploadsCache | None = None
+        if uploads_cache_path is not None:
+            cache_path = uploads_cache_path if isinstance(uploads_cache_path, Path) else Path(uploads_cache_path)
+            self._uploads_cache_storage = YouTubeUploadsCache(cache_path, logger=self._logger)
+            self._uploads_cache.update(self._uploads_cache_storage.snapshot())
 
     async def fetch(self) -> LiveFeedState:
         if self._http_mode == "async":
@@ -59,6 +145,11 @@ class YouTubeLiveConnector:
             results = await self._fetch_sync()
 
         return self._aggregate_results(results)
+
+    def _remember_uploads_playlist(self, channel_id: str, playlist_id: str) -> None:
+        self._uploads_cache[channel_id] = playlist_id
+        if self._uploads_cache_storage is not None:
+            self._uploads_cache_storage._remember_uploads_playlist(channel_id, playlist_id)
 
     async def _fetch_async(self) -> Sequence[Tuple[List[Video], List[Video], List[str]] | Exception]:
         timeout = aiohttp.ClientTimeout(total=self._session_timeout)
@@ -198,7 +289,7 @@ class YouTubeLiveConnector:
             )
             return None, "Не удалось получить список загрузок канала."
 
-        self._uploads_cache[channel_id] = playlist_id
+        self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
 
     def _ensure_uploads_playlist_sync(self, channel_id: str) -> Tuple[str | None, str | None]:
@@ -263,7 +354,7 @@ class YouTubeLiveConnector:
             )
             return None, "Не удалось получить список загрузок канала."
 
-        self._uploads_cache[channel_id] = playlist_id
+        self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
 
     async def _playlist_video_ids_async(
