@@ -15,6 +15,7 @@ from genti.config import (
     MAX_CONSECUTIVE_FAILURES,
     POLL_SECONDS,
     SHOW_UPCOMING,
+    CACHE_PATH,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
     TELEGRAM_UPDATES_POLL_INTERVAL,
@@ -105,6 +106,7 @@ async def main() -> None:
         channel_ids=WHITELIST,
         show_upcoming=SHOW_UPCOMING,
         logger=logging.getLogger("genti.youtube"),
+        uploads_cache_path=CACHE_PATH,
     )
     transformation = LiveDashboardTransformation()
     telegram_connector = TelegramDashboardConnector(

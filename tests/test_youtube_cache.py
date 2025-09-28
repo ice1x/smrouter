@@ -24,7 +24,9 @@ def test_snapshot_and_get(cache_path: Path) -> None:
 
     assert cache.get("channel") == "playlist"
     assert cache.snapshot() == {"channel": "playlist"}
-    assert json.loads(cache_path.read_text(encoding="utf-8")) == {"channel": "playlist"}
+    contents = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert contents["version"] == 1
+    assert contents["youtube"]["uploads_playlists"] == {"channel": "playlist"}
 
 
 def test_concurrent_remember_uploads_playlist(cache_path: Path) -> None:
@@ -41,5 +43,14 @@ def test_concurrent_remember_uploads_playlist(cache_path: Path) -> None:
             future.result()
 
     contents = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert set(contents) <= {f"channel-{i}" for i in range(5)}
-    assert all(isinstance(value, str) for value in contents.values())
+    uploads = contents["youtube"]["uploads_playlists"]
+    assert set(uploads) <= {f"channel-{i}" for i in range(5)}
+    assert all(isinstance(value, str) for value in uploads.values())
+
+
+def test_legacy_payload_is_loaded(cache_path: Path) -> None:
+    cache_path.write_text(json.dumps({"channel": "legacy"}), encoding="utf-8")
+    cache = YouTubeUploadsCache(cache_path)
+
+    assert cache.get("channel") == "legacy"
+    assert cache.snapshot() == {"channel": "legacy"}
