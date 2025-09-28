@@ -97,6 +97,7 @@ class YouTubeUploadsCache:
                 "youtube": {"uploads_playlists": self._cache},
             },
             ensure_ascii=False,
+            indent=2,
             sort_keys=True,
         )
         temp_path = cache_dir / f"{self._cache_path.name}.{uuid4().hex}.tmp"
