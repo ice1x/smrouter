@@ -67,10 +67,16 @@ class YouTubeUploadsCache:
         if not isinstance(payload, dict):
             return {}
 
+        uploads_payload = payload
+        youtube_section = payload.get("youtube")
+        if isinstance(youtube_section, dict):
+            uploads_payload = youtube_section.get("uploads_playlists") or {}
+
         cache: dict[str, str] = {}
-        for key, value in payload.items():
-            if isinstance(key, str) and isinstance(value, str) and key and value:
-                cache[key] = value
+        if isinstance(uploads_payload, dict):
+            for key, value in uploads_payload.items():
+                if isinstance(key, str) and isinstance(value, str) and key and value:
+                    cache[key] = value
         return cache
 
     def _remember_uploads_playlist(self, channel_id: str, playlist_id: str) -> None:
@@ -85,7 +91,14 @@ class YouTubeUploadsCache:
     def _persist_cache_locked(self) -> None:
         cache_dir = self._cache_path.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(self._cache, ensure_ascii=False, sort_keys=True)
+        serialized = json.dumps(
+            {
+                "version": 1,
+                "youtube": {"uploads_playlists": self._cache},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         temp_path = cache_dir / f"{self._cache_path.name}.{uuid4().hex}.tmp"
 
         try:
