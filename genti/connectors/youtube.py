@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import socket
+import threading
+from pathlib import Path
 from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -37,6 +39,7 @@ class YouTubeLiveConnector:
         session_timeout: float = 30.0,
         http_mode: Literal["sync", "async"] = "sync",
         logger: logging.Logger | None = None,
+        cache_path: str | Path | None = "cache.json",
     ) -> None:
         if not api_key:
             raise ValueError("YouTube API key must be provided")
@@ -50,7 +53,10 @@ class YouTubeLiveConnector:
             raise ValueError("http_mode must be 'sync' or 'async'")
         self._http_mode = http_mode
         self._logger = logger or logging.getLogger(__name__)
+        self._cache_path = Path(cache_path) if cache_path is not None else None
+        self._cache_lock = threading.Lock()
         self._uploads_cache: dict[str, str] = {}
+        self._load_persistent_cache()
 
     async def fetch(self) -> LiveFeedState:
         if self._http_mode == "async":
@@ -59,6 +65,65 @@ class YouTubeLiveConnector:
             results = await self._fetch_sync()
 
         return self._aggregate_results(results)
+
+    def _load_persistent_cache(self) -> None:
+        if self._cache_path is None:
+            return
+        try:
+            with self._cache_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            self._logger.warning("Failed to read cache from %s; ignoring", self._cache_path, exc_info=True)
+            return
+
+        if not isinstance(payload, dict):
+            self._logger.warning("Invalid cache structure in %s; ignoring", self._cache_path)
+            return
+
+        schema = payload.get("schema")
+        if schema != 1:
+            self._logger.warning("Unsupported cache schema %s in %s; ignoring", schema, self._cache_path)
+            return
+
+        uploads = payload.get("uploads_playlists")
+        if not isinstance(uploads, dict):
+            self._logger.warning("Invalid cache structure in %s; ignoring", self._cache_path)
+            return
+
+        with self._cache_lock:
+            for channel_id, playlist_id in uploads.items():
+                if isinstance(channel_id, str) and isinstance(playlist_id, str):
+                    self._uploads_cache.setdefault(channel_id, playlist_id)
+
+    def _persist_cache(self) -> None:
+        if self._cache_path is None:
+            return
+
+        with self._cache_lock:
+            snapshot = dict(self._uploads_cache)
+
+        payload = {"schema": 1, "uploads_playlists": snapshot}
+
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._cache_path.with_name(self._cache_path.name + ".tmp")
+            with temp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            temp_path.replace(self._cache_path)
+        except OSError:
+            self._logger.warning("Failed to write cache to %s", self._cache_path, exc_info=True)
+
+    def _remember_uploads_playlist(self, channel_id: str, playlist_id: str) -> None:
+        changed = False
+        with self._cache_lock:
+            if self._uploads_cache.get(channel_id) != playlist_id:
+                self._uploads_cache[channel_id] = playlist_id
+                changed = True
+
+        if changed:
+            self._persist_cache()
 
     async def _fetch_async(self) -> Sequence[Tuple[List[Video], List[Video], List[str]] | Exception]:
         timeout = aiohttp.ClientTimeout(total=self._session_timeout)
@@ -198,7 +263,7 @@ class YouTubeLiveConnector:
             )
             return None, "Не удалось получить список загрузок канала."
 
-        self._uploads_cache[channel_id] = playlist_id
+        self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
 
     def _ensure_uploads_playlist_sync(self, channel_id: str) -> Tuple[str | None, str | None]:
@@ -263,7 +328,7 @@ class YouTubeLiveConnector:
             )
             return None, "Не удалось получить список загрузок канала."
 
-        self._uploads_cache[channel_id] = playlist_id
+        self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
 
     async def _playlist_video_ids_async(

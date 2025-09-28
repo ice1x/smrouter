@@ -201,6 +201,9 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Local cache for persisted API responses
+cache.json
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

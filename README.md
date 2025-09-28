@@ -19,3 +19,7 @@ docker compose down
 - `TELEGRAM_UPDATES_POLL_INTERVAL` — пауза между запросами `getUpdates` Telegram (по умолчанию равна `POLL_SECONDS`).
 - `TELEGRAM_UPDATES_TIMEOUT` — таймаут long polling Telegram, автоматически ограничивается 50 секундами.
 
+## кеширование
+
+- `cache.json` — файл, где платформа хранит вспомогательные данные (например, идентификаторы плейлистов загрузок каналов), чтобы сократить число повторных запросов к YouTube API между перезапусками.
+
