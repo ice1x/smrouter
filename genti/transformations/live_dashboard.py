@@ -8,6 +8,7 @@ from telegram.helpers import escape_markdown
 
 from genti.models import DashboardUpdate, LiveFeedState, Video
 from genti.platform import TransformationStage
+from genti.templates import TELEGRAM_TEMPLATES
 
 
 class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUpdate]):
@@ -28,9 +29,13 @@ class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUp
         )
 
     def _build_dashboard_text(self, state: LiveFeedState) -> str:
-        lines: List[str] = ["⭐️ YOUTUBE ⭐️", ""]
+        lines: List[str] = [TELEGRAM_TEMPLATES.dashboard_header, ""]
 
-        empty_placeholder = "— данные недоступны" if state.errors else "— (пусто)"
+        empty_placeholder = (
+            TELEGRAM_TEMPLATES.empty_with_errors
+            if state.errors
+            else TELEGRAM_TEMPLATES.empty_without_errors
+        )
         lines.extend(self._format_video_list(state.live, empty_placeholder=empty_placeholder))
 
         if state.errors:

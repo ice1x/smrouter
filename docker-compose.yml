@@ -2,7 +2,7 @@ services:
   yt-tg-bot:
     build: .
     image: yt-tg-bot:local
-    restart: unless-stopped   # можно убрать для ноутбука
+    restart: unless-stopped   # safe to disable on laptops
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHANNEL_ID: ${TELEGRAM_CHANNEL_ID}
@@ -10,5 +10,5 @@ services:
       WHITELIST: ${WHITELIST}
       POLL_SECONDS: ${POLL_SECONDS:-300}
       SHOW_UPCOMING: ${SHOW_UPCOMING:-1}
-    # логам удобно следить в консоли: docker compose logs -f
+    # tail logs via: docker compose logs -f
 

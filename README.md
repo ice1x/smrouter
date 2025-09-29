@@ -1,21 +1,21 @@
 # genti
 YT 2 TG
 
-# собрать образ
+# Build the image
 docker compose build
 
-# запустить
+# Start the stack
 docker compose up -d
 
-# смотреть логи
+# Tail the logs
 docker compose logs -f
 
-# остановить
+# Stop the stack
 docker compose down
 
-## переменные окружения
+## Environment variables
 
-- `POLL_SECONDS` — частота опроса YouTube и обновления дашборда (по умолчанию 90 секунд).
-- `TELEGRAM_UPDATES_POLL_INTERVAL` — пауза между запросами `getUpdates` Telegram (по умолчанию равна `POLL_SECONDS`).
-- `TELEGRAM_UPDATES_TIMEOUT` — таймаут long polling Telegram, автоматически ограничивается 50 секундами.
+- `POLL_SECONDS` — how frequently to poll YouTube and refresh the dashboard (default: 90 seconds).
+- `TELEGRAM_UPDATES_POLL_INTERVAL` — pause between Telegram `getUpdates` requests (default: `POLL_SECONDS`).
+- `TELEGRAM_UPDATES_TIMEOUT` — Telegram long polling timeout; automatically clamped to 50 seconds.
 
