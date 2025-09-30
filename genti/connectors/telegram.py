@@ -134,6 +134,20 @@ class TelegramDashboardConnector:
             )
         except TelegramError:
             self._logger.warning("Unable to pin dashboard message", exc_info=True)
+        else:
+            await self._suppress_pin_notification()
+
+    async def _suppress_pin_notification(self) -> None:
+        if self._dashboard_message_id is None:
+            return
+
+        try:
+            await self._application.bot.delete_message(
+                chat_id=await self._target_chat_id(),
+                message_id=self._dashboard_message_id + 1,
+            )
+        except TelegramError:
+            self._logger.debug("Unable to delete pin notification", exc_info=True)
 
     async def _edit_dashboard(self, message: Message, text: str) -> None:
         try:
