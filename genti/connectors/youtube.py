@@ -88,6 +88,14 @@ class YouTubeUploadsCache:
             self._cache[channel_id] = playlist_id
             self._persist_cache_locked()
 
+    def _forget_uploads_playlist(self, channel_id: str) -> None:
+        self._ensure_loaded()
+        with self._cache_lock:
+            if channel_id not in self._cache:
+                return
+            self._cache.pop(channel_id, None)
+            self._persist_cache_locked()
+
     def _persist_cache_locked(self) -> None:
         cache_dir = self._cache_path.parent
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -165,6 +173,11 @@ class YouTubeLiveConnector:
         if self._uploads_cache_storage is not None:
             self._uploads_cache_storage._remember_uploads_playlist(channel_id, playlist_id)
 
+    def _forget_uploads_playlist(self, channel_id: str) -> None:
+        self._uploads_cache.pop(channel_id, None)
+        if self._uploads_cache_storage is not None:
+            self._uploads_cache_storage._forget_uploads_playlist(channel_id)
+
     async def _fetch_async(self) -> Sequence[Tuple[List[Video], List[Video], List[str]] | Exception]:
         timeout = aiohttp.ClientTimeout(total=self._session_timeout)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -207,13 +220,28 @@ class YouTubeLiveConnector:
         if not playlist_id:
             return [], [], errors
 
-        video_ids, playlist_items_error = await asyncio.to_thread(
+        video_ids, playlist_items_error, playlist_invalid = await asyncio.to_thread(
             self._playlist_video_ids_sync,
+            channel_id,
             playlist_id,
         )
+        if playlist_invalid:
+            refreshed_playlist_id, refresh_error = await asyncio.to_thread(
+                self._ensure_uploads_playlist_sync,
+                channel_id,
+            )
+            if refresh_error or not refreshed_playlist_id:
+                errors.append(refresh_error or "Unable to fetch the channel uploads list.")
+                return [], [], errors
+            playlist_id = refreshed_playlist_id
+            video_ids, playlist_items_error, playlist_invalid = await asyncio.to_thread(
+                self._playlist_video_ids_sync,
+                channel_id,
+                playlist_id,
+            )
         if playlist_items_error:
             errors.append(playlist_items_error)
-        if not video_ids:
+        if playlist_invalid or not video_ids:
             return [], [], errors
 
         video_items, video_error = await asyncio.to_thread(
@@ -236,10 +264,25 @@ class YouTubeLiveConnector:
         if not playlist_id:
             return [], [], errors
 
-        video_ids, playlist_items_error = await self._playlist_video_ids_async(session, playlist_id)
+        video_ids, playlist_items_error, playlist_invalid = await self._playlist_video_ids_async(
+            session,
+            channel_id,
+            playlist_id,
+        )
+        if playlist_invalid:
+            refreshed_playlist_id, refresh_error = await self._ensure_uploads_playlist_async(session, channel_id)
+            if refresh_error or not refreshed_playlist_id:
+                errors.append(refresh_error or "Unable to fetch the channel uploads list.")
+                return [], [], errors
+            playlist_id = refreshed_playlist_id
+            video_ids, playlist_items_error, playlist_invalid = await self._playlist_video_ids_async(
+                session,
+                channel_id,
+                playlist_id,
+            )
         if playlist_items_error:
             errors.append(playlist_items_error)
-        if not video_ids:
+        if playlist_invalid or not video_ids:
             return [], [], errors
 
         video_items, video_error = await self._fetch_video_metadata_async(session, video_ids)
@@ -372,8 +415,8 @@ class YouTubeLiveConnector:
         return playlist_id, None
 
     async def _playlist_video_ids_async(
-        self, session: aiohttp.ClientSession, playlist_id: str
-    ) -> Tuple[List[str], str | None]:
+        self, session: aiohttp.ClientSession, channel_id: str, playlist_id: str
+    ) -> Tuple[List[str], str | None, bool]:
         params = {
             "part": "contentDetails",
             "playlistId": playlist_id,
@@ -396,7 +439,12 @@ class YouTubeLiveConnector:
                         _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                         detail,
                     )
-                    return [], self._user_error_message(response.status, detail)
+                    playlist_invalid = self._handle_possible_playlist_invalidation(
+                        channel_id,
+                        response.status,
+                        detail,
+                    )
+                    return [], self._user_error_message(response.status, detail), playlist_invalid
                 payload = await response.json()
         except asyncio.TimeoutError:
             self._logger.warning(
@@ -404,18 +452,20 @@ class YouTubeLiveConnector:
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "YouTube API request timed out."
+            return [], "YouTube API request timed out.", False
         except aiohttp.ClientError:
             self._logger.exception(
                 "YouTube playlistItems failed: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Network error while contacting the YouTube API."
+            return [], "Network error while contacting the YouTube API.", False
 
-        return self._extract_playlist_video_ids(payload), None
+        return self._extract_playlist_video_ids(payload), None, False
 
-    def _playlist_video_ids_sync(self, playlist_id: str) -> Tuple[List[str], str | None]:
+    def _playlist_video_ids_sync(
+        self, channel_id: str, playlist_id: str
+    ) -> Tuple[List[str], str | None, bool]:
         params = {
             "part": "contentDetails",
             "playlistId": playlist_id,
@@ -441,7 +491,12 @@ class YouTubeLiveConnector:
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                 detail,
             )
-            return [], self._user_error_message(exc.code, detail)
+            playlist_invalid = self._handle_possible_playlist_invalidation(
+                channel_id,
+                exc.code,
+                detail,
+            )
+            return [], self._user_error_message(exc.code, detail), playlist_invalid
         except urllib_error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, (TimeoutError, socket.timeout)):
@@ -450,22 +505,44 @@ class YouTubeLiveConnector:
                     playlist_id,
                     _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
                 )
-                return [], "YouTube API request timed out."
+                return [], "YouTube API request timed out.", False
             self._logger.exception(
                 "YouTube playlistItems failed: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "Network error while contacting the YouTube API."
+            return [], "Network error while contacting the YouTube API.", False
         except (TimeoutError, socket.timeout):
             self._logger.warning(
                 "YouTube playlistItems timed out: playlist=%s cost=%s units",
                 playlist_id,
                 _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS,
             )
-            return [], "YouTube API request timed out."
+            return [], "YouTube API request timed out.", False
 
-        return self._extract_playlist_video_ids(payload), None
+        return self._extract_playlist_video_ids(payload), None, False
+
+    def _handle_possible_playlist_invalidation(
+        self, channel_id: str, status: int, detail: str | None
+    ) -> bool:
+        if self._is_playlist_not_found_error(status, detail):
+            self._logger.info(
+                "Uploads playlist invalidated for channel=%s; clearing cache", channel_id
+            )
+            self._forget_uploads_playlist(channel_id)
+            return True
+        return False
+
+    def _is_playlist_not_found_error(self, status: int, detail: str | None) -> bool:
+        if status == 404:
+            return True
+        if detail:
+            detail_lower = detail.lower()
+            if "playlist" in detail_lower and "cannot be found" in detail_lower:
+                return True
+            if "playlistnotfound" in detail_lower:
+                return True
+        return False
 
     async def _fetch_video_metadata_async(
         self, session: aiohttp.ClientSession, video_ids: Sequence[str]
