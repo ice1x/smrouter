@@ -230,8 +230,14 @@ class YouTubeLiveConnector:
                 self._ensure_uploads_playlist_sync,
                 channel_id,
             )
-            if refresh_error or not refreshed_playlist_id:
-                errors.append(refresh_error or "Unable to fetch the channel uploads list.")
+            if refresh_error:
+                errors.append(refresh_error)
+                return [], [], errors
+            if not refreshed_playlist_id:
+                self._logger.warning(
+                    "Failed to refresh uploads playlist for channel %s after invalidation",
+                    channel_id,
+                )
                 return [], [], errors
             playlist_id = refreshed_playlist_id
             video_ids, playlist_items_error, playlist_invalid = await asyncio.to_thread(
@@ -271,8 +277,14 @@ class YouTubeLiveConnector:
         )
         if playlist_invalid:
             refreshed_playlist_id, refresh_error = await self._ensure_uploads_playlist_async(session, channel_id)
-            if refresh_error or not refreshed_playlist_id:
-                errors.append(refresh_error or "Unable to fetch the channel uploads list.")
+            if refresh_error:
+                errors.append(refresh_error)
+                return [], [], errors
+            if not refreshed_playlist_id:
+                self._logger.warning(
+                    "Failed to refresh uploads playlist for channel %s after invalidation",
+                    channel_id,
+                )
                 return [], [], errors
             playlist_id = refreshed_playlist_id
             video_ids, playlist_items_error, playlist_invalid = await self._playlist_video_ids_async(
