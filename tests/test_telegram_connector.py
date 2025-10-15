@@ -32,7 +32,6 @@ class DummyBot:
         self,
         *,
         send_exception: Exception | None = None,
-        edit_exception: Exception | None = None,
         get_chat_exception: Exception | None = None,
         chat_id: int | str = 123,
         bot_id: int = 999,
@@ -40,11 +39,9 @@ class DummyBot:
         delete_exception: Exception | None = None,
     ):
         self._send_exception = send_exception
-        self._edit_exception = edit_exception
         self._get_chat_exception = get_chat_exception
         self._delete_exception = delete_exception
         self.sent_messages = []
-        self.edited_messages = []
         self.pinned = []
         self.deleted_messages = []
         self.get_chat_called = 0
@@ -66,12 +63,6 @@ class DummyBot:
         message = DummyMessage(message_id=self._next_message_id)
         self._next_message_id += 1
         return message
-
-    async def edit_message_text(self, **kwargs):
-        if self._edit_exception is not None:
-            raise self._edit_exception
-        self.edited_messages.append(kwargs)
-        return DummyMessage(message_id=kwargs["message_id"])
 
     async def pin_chat_message(self, **kwargs):
         self.pinned.append(kwargs)
@@ -100,29 +91,12 @@ async def test_dashboard_creation_raises_clear_error_on_missing_channel():
 
 
 @pytest.mark.asyncio
-async def test_edit_dashboard_ignores_message_not_modified(caplog):
-    bot = DummyBot(edit_exception=BadRequest("Message is not modified"))
-    application = SimpleNamespace(bot=bot)
-    connector = TelegramDashboardConnector(application=application, channel_id="123")
-    connector._dashboard_message_id = 1  # simulate existing dashboard
-
-    message = DummyMessage(message_id=1)
-
-    caplog.set_level("DEBUG")
-    await connector._edit_dashboard(message, "same")
-
-    assert any("unchanged" in record.getMessage() for record in caplog.records)
-
-
-@pytest.mark.asyncio
 async def test_resolves_channel_id_only_once():
     bot = DummyBot(chat_id=-100)
     application = SimpleNamespace(bot=bot)
     connector = TelegramDashboardConnector(application=application, channel_id="@demo")
-    connector._dashboard_message_id = 1
 
-    message = DummyMessage(message_id=1)
-    await connector._edit_dashboard(message, "text")
+    await connector._send_dashboard_message("text")
     await connector._send_message("payload")
 
     assert bot.get_chat_called == 1
@@ -139,7 +113,7 @@ async def test_send_message_propagates_channel_error():
 
 
 @pytest.mark.asyncio
-async def test_reuses_existing_pinned_dashboard():
+async def test_refresh_dashboard_replaces_existing_pinned_dashboard():
     pinned = DummyMessage(message_id=42, from_user=DummyUser(user_id=1))
     bot = DummyBot(pinned_message=pinned, bot_id=1)
     application = SimpleNamespace(bot=bot)
@@ -154,9 +128,38 @@ async def test_reuses_existing_pinned_dashboard():
 
     await connector.push(update)
 
-    assert not bot.sent_messages
-    assert bot.edited_messages
-    assert bot.edited_messages[0]["message_id"] == 42
+    assert bot.sent_messages
+    assert bot.sent_messages[0]["text"] == "new text"
+    assert any(entry["message_id"] == 42 for entry in bot.deleted_messages)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_is_recreated_on_each_push():
+    bot = DummyBot()
+    application = SimpleNamespace(bot=bot)
+    connector = TelegramDashboardConnector(application=application, channel_id="123")
+
+    update = DashboardUpdate(
+        dashboard_text="first",
+        new_live_messages=[],
+        state=LiveFeedState(live=[], upcoming=[]),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    await connector.push(update)
+
+    update_new = DashboardUpdate(
+        dashboard_text="second",
+        new_live_messages=[],
+        state=LiveFeedState(live=[], upcoming=[]),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+    await connector.push(update_new)
+
+    assert len(bot.sent_messages) == 2
+    # The first dashboard message should be deleted after the second update.
+    assert any(entry["message_id"] == 1 for entry in bot.deleted_messages)
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,6 @@ from telegram.ext import Application
 
 from genti.exceptions import FatalPipelineError
 from genti.models import DashboardUpdate
-from genti.templates import TELEGRAM_TEMPLATES
 
 
 ChatId = Union[int, str]
@@ -36,8 +35,7 @@ class TelegramDashboardConnector:
         self._resolved_chat: Optional[Chat] = None
 
     async def push(self, update: DashboardUpdate) -> None:
-        message = await self._ensure_dashboard()
-        await self._edit_dashboard(message, update.dashboard_text)
+        await self._refresh_dashboard(update.dashboard_text)
         for text in update.new_live_messages:
             await self._send_message(text)
 
@@ -65,31 +63,21 @@ class TelegramDashboardConnector:
         self._resolved_chat = chat
         return chat
 
-    async def _ensure_dashboard(self) -> Message:
+    async def _refresh_dashboard(self, text: str) -> None:
         await self._ensure_dashboard_message_id()
 
-        if self._dashboard_message_id is not None:
-            try:
-                message = await self._application.bot.edit_message_text(
-                    chat_id=await self._target_chat_id(),
-                    message_id=self._dashboard_message_id,
-                    text=TELEGRAM_TEMPLATES.initialization_message,
-                    parse_mode=self._parse_mode,
-                    disable_web_page_preview=True,
-                )
-                return message
-            except TelegramError:
-                self._logger.warning(
-                    "Failed to reuse dashboard message %s, creating a new one",
-                    self._dashboard_message_id,
-                    exc_info=True,
-                )
-                self._dashboard_message_id = None
+        previous_message_id = self._dashboard_message_id
+        message = await self._send_dashboard_message(text)
+        await self._pin_dashboard()
 
+        if previous_message_id is not None and previous_message_id != message.message_id:
+            await self._delete_message(previous_message_id)
+
+    async def _send_dashboard_message(self, text: str) -> Message:
         try:
             message = await self._application.bot.send_message(
                 chat_id=await self._target_chat_id(),
-                text=TELEGRAM_TEMPLATES.initialization_message,
+                text=text,
                 parse_mode=self._parse_mode,
                 disable_web_page_preview=True,
             )
@@ -99,8 +87,8 @@ class TelegramDashboardConnector:
                     "Telegram channel is unavailable: verify the channel identifier and bot permissions"
                 ) from exc
             raise
+
         self._dashboard_message_id = message.message_id
-        await self._pin_dashboard()
         return message
 
     async def _ensure_dashboard_message_id(self) -> None:
@@ -149,20 +137,14 @@ class TelegramDashboardConnector:
         except TelegramError:
             self._logger.debug("Unable to delete pin notification", exc_info=True)
 
-    async def _edit_dashboard(self, message: Message, text: str) -> None:
+    async def _delete_message(self, message_id: int) -> None:
         try:
-            await self._application.bot.edit_message_text(
+            await self._application.bot.delete_message(
                 chat_id=await self._target_chat_id(),
-                message_id=message.message_id,
-                text=text,
-                parse_mode=self._parse_mode,
-                disable_web_page_preview=True,
+                message_id=message_id,
             )
-        except BadRequest as exc:
-            if exc.message and "message is not modified" in exc.message.lower():
-                self._logger.debug("Dashboard message unchanged; skipping edit")
-                return
-            raise
+        except TelegramError:
+            self._logger.debug("Unable to delete dashboard message %s", message_id, exc_info=True)
 
     async def _send_message(self, text: str) -> None:
         try:
