@@ -356,7 +356,7 @@ class YouTubeLiveConnector:
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Unable to fetch the channel uploads list."
+            return None, None
 
         self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
@@ -421,7 +421,7 @@ class YouTubeLiveConnector:
                 channel_id,
                 _YOUTUBE_CHANNELS_COST_UNITS,
             )
-            return None, "Unable to fetch the channel uploads list."
+            return None, None
 
         self._remember_uploads_playlist(channel_id, playlist_id)
         return playlist_id, None
