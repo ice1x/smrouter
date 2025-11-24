@@ -4,25 +4,13 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
-from typing import Awaitable, Callable, Dict
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Dict, Iterable, List
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from genti.config import (
-    ALLOWED_ACTOR_IDS,
-    LOG_LEVEL,
-    MAX_CONSECUTIVE_FAILURES,
-    POLL_SECONDS,
-    SHOW_UPCOMING,
-    CACHE_PATH,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHANNEL_ID,
-    TELEGRAM_UPDATES_POLL_INTERVAL,
-    TELEGRAM_UPDATES_TIMEOUT,
-    WHITELIST,
-    YT_API_KEY,
-)
+from genti.config import ApplicationConfig, ConfigurationError, PipelineMapping, load_config
 from genti.connectors.telegram import TelegramDashboardConnector
 from genti.connectors.youtube import YouTubeLiveConnector
 from genti.exceptions import FatalPipelineError
@@ -30,104 +18,140 @@ from genti.platform import Pipeline, PipelineConfig
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 from genti.templates import TELEGRAM_TEMPLATES
 
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
-def _is_actor_allowed(update: Update) -> bool:
-    if not ALLOWED_ACTOR_IDS:
+
+@dataclass
+class ManagedPipeline:
+    """Pipeline instance bound to a Telegram destination."""
+
+    mapping: PipelineMapping
+    pipeline: Pipeline
+
+
+def _configure_logging(log_level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _is_actor_allowed(update: Update, allowed_actor_ids: Iterable[str]) -> bool:
+    allowed_ids = set(str(actor) for actor in allowed_actor_ids)
+    if not allowed_ids:
         return False
 
     user = getattr(update, "effective_user", None)
     if user is not None:
         user_id = getattr(user, "id", None)
-        if user_id is not None and str(user_id) in ALLOWED_ACTOR_IDS:
+        if user_id is not None and str(user_id) in allowed_ids:
             return True
 
     chat = getattr(update, "effective_chat", None)
     if chat is not None:
         chat_id = getattr(chat, "id", None)
-        if chat_id is not None and str(chat_id) in ALLOWED_ACTOR_IDS:
+        if chat_id is not None and str(chat_id) in allowed_ids:
             return True
 
     return False
 
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_actor_allowed(update):
-        user = getattr(getattr(update, "effective_user", None), "id", None)
-        chat = getattr(getattr(update, "effective_chat", None), "id", None)
-        logger.warning(
-            "Unauthorized start command: user_id=%s chat_id=%s",  # noqa: G004
-            user,
-            chat,
-        )
+def _build_start_handler(allowed_actor_ids: Iterable[str]):
+    async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_actor_allowed(update, allowed_actor_ids):
+            user = getattr(getattr(update, "effective_user", None), "id", None)
+            chat = getattr(getattr(update, "effective_chat", None), "id", None)
+            logger.warning(
+                "Unauthorized start command: user_id=%s chat_id=%s",  # noqa: G004
+                user,
+                chat,
+            )
+            if update.message is not None:
+                await update.message.reply_text(TELEGRAM_TEMPLATES.unauthorized_start)
+            return
+
         if update.message is not None:
-            await update.message.reply_text(TELEGRAM_TEMPLATES.unauthorized_start)
-        return
+            await update.message.reply_text(TELEGRAM_TEMPLATES.start_response)
 
-    await update.message.reply_text(
-        TELEGRAM_TEMPLATES.start_response
-    )
+    return start_cmd
 
 
-def _validate_environment() -> None:
-    missing: Dict[str, bool] = {
-        "TELEGRAM_BOT_TOKEN": bool(TELEGRAM_BOT_TOKEN),
-        "TELEGRAM_CHANNEL_ID": bool(TELEGRAM_CHANNEL_ID),
-        "YT_API_KEY": bool(YT_API_KEY),
-        "WHITELIST": bool(WHITELIST),
-    }
-    if not all(missing.values()):
-        logger.error("Missing required environment configuration: %s", missing)
-        raise SystemExit(
-            "The following environment variables must be configured: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, "
-            "YT_API_KEY, WHITELIST"
+def _validate_config(config: ApplicationConfig) -> None:
+    if not config.pipelines:
+        raise SystemExit("Configuration must include at least one pipeline mapping.")
+
+    for mapping in config.pipelines:
+        if not mapping.stream_ids:
+            raise SystemExit(
+                f"Pipeline for Telegram channel {mapping.telegram_channel_id} has no configured streams."
+            )
+
+
+def _format_pipeline_summary(pipelines: Iterable[PipelineMapping]) -> str:
+    summary: List[str] = []
+    for pipeline in pipelines:
+        streams = ", ".join(f"{stream.name} ({stream.youtube_id})" for stream in pipeline.streams)
+        summary.append(f"tg={pipeline.telegram_channel_id}: {streams}")
+    return "; ".join(summary)
+
+
+def _build_managed_pipelines(config: ApplicationConfig, application) -> List[ManagedPipeline]:
+    managed: List[ManagedPipeline] = []
+    for mapping in config.pipelines:
+        youtube_connector = YouTubeLiveConnector(
+            api_key=config.auth.youtube_api_key,
+            channel_ids=mapping.stream_ids,
+            show_upcoming=config.show_upcoming,
+            logger=logging.getLogger(f"genti.youtube.{mapping.telegram_channel_id}"),
+            uploads_cache_path=config.cache_path,
         )
+        transformation = LiveDashboardTransformation()
+        telegram_connector = TelegramDashboardConnector(
+            application=application,
+            channel_id=mapping.telegram_channel_id,
+            logger=logging.getLogger(f"genti.telegram.{mapping.telegram_channel_id}"),
+        )
+        pipeline = Pipeline(
+            source=youtube_connector,
+            transformation=transformation,
+            sink=telegram_connector,
+            config=PipelineConfig(
+                poll_interval=config.poll_seconds,
+                max_consecutive_failures=config.max_consecutive_failures,
+            ),
+            logger=logging.getLogger(f"genti.pipeline.{mapping.telegram_channel_id}"),
+        )
+        managed.append(ManagedPipeline(mapping=mapping, pipeline=pipeline))
+    return managed
 
 
-async def main() -> None:
-    _validate_environment()
+def _build_failure_state(managed_pipelines: Iterable[ManagedPipeline]) -> Dict[str, int]:
+    return {pipeline.mapping.telegram_channel_id: 0 for pipeline in managed_pipelines}
+
+
+async def main(config_path: str | None = None) -> None:
+    try:
+        config = load_config(config_path)
+    except ConfigurationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    _configure_logging(config.log_level)
+    _validate_config(config)
 
     logger.info(
-        "Starting platform: whitelist=%s poll_seconds=%s show_upcoming=%s tg_poll_interval=%s tg_timeout=%s",
-        ",".join(WHITELIST),
-        POLL_SECONDS,
-        SHOW_UPCOMING,
-        TELEGRAM_UPDATES_POLL_INTERVAL,
-        TELEGRAM_UPDATES_TIMEOUT,
+        "Starting platform: pipelines=%s poll_seconds=%s show_upcoming=%s tg_poll_interval=%s tg_timeout=%s",
+        _format_pipeline_summary(config.pipelines),
+        config.poll_seconds,
+        config.show_upcoming,
+        config.telegram_updates_poll_interval,
+        config.telegram_updates_timeout,
     )
 
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_cmd))
+    application = ApplicationBuilder().token(config.auth.telegram_bot_token).build()
+    application.add_handler(CommandHandler("start", _build_start_handler(config.allowed_actor_ids)))
 
-    youtube_connector = YouTubeLiveConnector(
-        api_key=YT_API_KEY,
-        channel_ids=WHITELIST,
-        show_upcoming=SHOW_UPCOMING,
-        logger=logging.getLogger("genti.youtube"),
-        uploads_cache_path=CACHE_PATH,
-    )
-    transformation = LiveDashboardTransformation()
-    telegram_connector = TelegramDashboardConnector(
-        application=application,
-        channel_id=TELEGRAM_CHANNEL_ID,
-        logger=logging.getLogger("genti.telegram"),
-    )
-    pipeline = Pipeline(
-        source=youtube_connector,
-        transformation=transformation,
-        sink=telegram_connector,
-        config=PipelineConfig(
-            poll_interval=POLL_SECONDS,
-            max_consecutive_failures=MAX_CONSECUTIVE_FAILURES,
-        ),
-        logger=logging.getLogger("genti.pipeline"),
-    )
-
-    failure_state = {"count": 0}
+    managed_pipelines = _build_managed_pipelines(config, application)
+    failure_state = _build_failure_state(managed_pipelines)
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
@@ -135,24 +159,29 @@ async def main() -> None:
         with suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop_event.set)
 
-    async def run_pipeline_iteration(stop_application: Callable[[], Awaitable[None]]) -> None:
+    async def run_pipeline_iteration(
+        pipeline: ManagedPipeline, stop_application: Callable[[], Awaitable[None]]
+    ) -> None:
         try:
-            await pipeline.run_once()
-            failure_state["count"] = 0
+            await pipeline.pipeline.run_once()
+            failure_state[pipeline.mapping.telegram_channel_id] = 0
         except asyncio.CancelledError:
             raise
         except FatalPipelineError:
-            logger.exception("Fatal pipeline error encountered; requesting shutdown")
+            logger.exception(
+                "Fatal pipeline error encountered for %s; requesting shutdown", pipeline.mapping.telegram_channel_id
+            )
             await stop_application()
         except Exception:
-            failure_state["count"] += 1
+            failure_state[pipeline.mapping.telegram_channel_id] += 1
             logger.exception(
-                "Pipeline run failed (%d/%d)",
-                failure_state["count"],
-                MAX_CONSECUTIVE_FAILURES,
+                "Pipeline run failed for %s (%d/%d)",
+                pipeline.mapping.telegram_channel_id,
+                failure_state[pipeline.mapping.telegram_channel_id],
+                config.max_consecutive_failures,
             )
-            if failure_state["count"] >= MAX_CONSECUTIVE_FAILURES:
-                logger.critical("Maximum failure threshold reached, shutting down application")
+            if failure_state[pipeline.mapping.telegram_channel_id] >= config.max_consecutive_failures:
+                logger.critical("Maximum failure threshold reached; shutting down application")
                 await stop_application()
 
     async def request_application_stop() -> None:
@@ -163,20 +192,24 @@ async def main() -> None:
 
     if application.job_queue is not None:
         async def pipeline_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-            await run_pipeline_iteration(request_application_stop)
+            for pipeline in managed_pipelines:
+                await run_pipeline_iteration(pipeline, request_application_stop)
 
-        application.job_queue.run_repeating(pipeline_job, interval=POLL_SECONDS, first=0)
+        application.job_queue.run_repeating(pipeline_job, interval=config.poll_seconds, first=0)
     else:
         logger.warning("Application has no JobQueue; falling back to asyncio-based scheduler")
 
         async def scheduler_loop() -> None:
             try:
                 while not stop_event.is_set():
-                    await run_pipeline_iteration(request_application_stop)
+                    for pipeline in managed_pipelines:
+                        await run_pipeline_iteration(pipeline, request_application_stop)
+                        if stop_event.is_set():
+                            break
                     if stop_event.is_set():
                         break
                     try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=POLL_SECONDS)
+                        await asyncio.wait_for(stop_event.wait(), timeout=config.poll_seconds)
                     except asyncio.TimeoutError:
                         continue
             except asyncio.CancelledError:
@@ -190,8 +223,8 @@ async def main() -> None:
 
         if application.updater is not None:
             await application.updater.start_polling(
-                poll_interval=TELEGRAM_UPDATES_POLL_INTERVAL,
-                timeout=TELEGRAM_UPDATES_TIMEOUT,
+                poll_interval=config.telegram_updates_poll_interval,
+                timeout=config.telegram_updates_timeout,
             )
 
         await stop_event.wait()
