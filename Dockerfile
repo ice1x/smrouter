@@ -11,12 +11,14 @@ WORKDIR /app
 # Declare package versions to keep the build cache stable
 ARG PTB_VER=21.6
 ARG AIOHTTP_VER=3.10.5
+ARG PYYAML_VER=6.0.2
 
 # Build a wheelhouse with dependencies
 RUN pip install --upgrade pip wheel
 RUN pip wheel --no-cache-dir --wheel-dir=/wheels \
     python-telegram-bot==${PTB_VER} \
-    aiohttp==${AIOHTTP_VER}
+    aiohttp==${AIOHTTP_VER} \
+    PyYAML==${PYYAML_VER}
 
 # ===== 2) runtime stage =====
 FROM python:3.11-slim
@@ -34,7 +36,7 @@ COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 
 # Copy the application code
-COPY tg_youtube_live_feed.py /app/tg_youtube_live_feed.py
+COPY . /app
 
 # Switch to the non-root user
 USER appuser
@@ -42,8 +44,8 @@ USER appuser
 # Environment variables are provided via docker-compose or docker run
 # Optional HEALTHCHECK to ensure the process stays alive
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD pgrep -f "tg_youtube_live_feed.py" >/dev/null || exit 1
+  CMD pgrep -f "main.py" >/dev/null || exit 1
 
 # Default command
-CMD ["python", "tg_youtube_live_feed.py"]
+CMD ["python", "main.py"]
 

@@ -1,0 +1,25 @@
+log_level: INFO
+poll_seconds: 300
+show_upcoming: true
+max_consecutive_failures: 4
+telegram_updates_poll_interval: 300
+telegram_updates_timeout: 50
+cache_path: cache/cache.json
+
+auth:
+  telegram:
+    bot_token: "TELEGRAM_BOT_TOKEN"
+    allowed_user_ids:
+      - "123456789"
+  youtube:
+    api_key: "YOUTUBE_API_KEY"
+
+pipelines:
+  - telegram_channel_id: "-100123456789"
+    streams:
+      - ["UCxxxxxxxxxxxxxxxxxxxxxx", "Main channel"]
+      - ["UCyyyyyyyyyyyyyyyyyyyy", "Backup channel"]
+  - telegram_channel_id: "@another_channel"
+    streams:
+      - id: "UCzzzzzzzzzzzzzzzzzzzz"
+        name: "News and updates"
