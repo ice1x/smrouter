@@ -14,6 +14,7 @@ from genti.config import ApplicationConfig, ConfigurationError, PipelineMapping,
 from genti.connectors.telegram import TelegramDashboardConnector
 from genti.connectors.youtube import YouTubeLiveConnector
 from genti.exceptions import FatalPipelineError
+from genti.logging_utils import configure_logging
 from genti.platform import Pipeline, PipelineConfig
 from genti.transformations.live_dashboard import LiveDashboardTransformation
 from genti.templates import TELEGRAM_TEMPLATES
@@ -27,13 +28,6 @@ class ManagedPipeline:
 
     mapping: PipelineMapping
     pipeline: Pipeline
-
-
-def _configure_logging(log_level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
 
 
 def _is_actor_allowed(update: Update, allowed_actor_ids: Iterable[str]) -> bool:
@@ -135,7 +129,10 @@ async def main(config_path: str | None = None) -> None:
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
 
-    _configure_logging(config.log_level)
+    configure_logging(
+        config.log_level,
+        redactions=(config.auth.telegram_bot_token, config.auth.youtube_api_key),
+    )
     _validate_config(config)
 
     logger.info(
