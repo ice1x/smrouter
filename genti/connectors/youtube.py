@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import socket
 import threading
 from contextlib import suppress
+from html import unescape
 from pathlib import Path
 from typing import Any, Iterable, List, Literal, Sequence, Set, Tuple
 from uuid import uuid4
@@ -209,8 +211,31 @@ class YouTubeLiveConnector:
         return LiveFeedState(
             live=self._deduplicate(live_entries),
             upcoming=self._deduplicate(upcoming_entries),
-            errors=sorted(errors),
+            errors=self._summarize_errors(errors),
         )
+
+    def _summarize_errors(self, errors: Set[str]) -> List[str]:
+        if not errors:
+            return []
+
+        summarized: Set[str] = set()
+        transient_markers = {
+            "Network error while contacting the YouTube API.",
+            "YouTube API request timed out.",
+            "Unable to refresh data from the YouTube API.",
+        }
+
+        if any(error in transient_markers for error in errors):
+            summarized.add(
+                "Cannot reach the YouTube API right now—will retry automatically."
+            )
+
+        for error in errors:
+            if error in transient_markers:
+                continue
+            summarized.add(error)
+
+        return sorted(summarized)
 
     async def _collect_for_channel_sync(self, channel_id: str) -> Tuple[List[Video], List[Video], List[str]]:
         playlist_id, playlist_error = await asyncio.to_thread(self._ensure_uploads_playlist_sync, channel_id)
@@ -710,15 +735,24 @@ class YouTubeLiveConnector:
         return None
 
     def _user_error_message(self, status: int, detail: str | None) -> str:
-        detail = detail or ""
+        detail = self._sanitize_error_detail(detail)
         detail_lower = detail.lower()
         if status == 403 and "quota" in detail_lower:
             return "YouTube API quota exceeded—updates are temporarily unavailable."
         if status == 401:
             return "Invalid YouTube API key."
+        if self._is_playlist_not_found_error(status, detail):
+            return "Uploads playlist not found—check the channel ID or privacy settings."
         if detail:
             return f"YouTube API error: {detail}"
         return f"YouTube API error (status {status})."
+
+    def _sanitize_error_detail(self, detail: str | None) -> str:
+        if not detail:
+            return ""
+        normalized = unescape(detail)
+        normalized = re.sub(r"<[^>]+>", "", normalized)
+        return normalized.strip()
 
     def _build_videos_params(self, video_ids: Sequence[str]) -> dict[str, Any]:
         return {
