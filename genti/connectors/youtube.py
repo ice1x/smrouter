@@ -127,6 +127,7 @@ _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS = 1
 _YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v="
 _YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 _YOUTUBE_VIDEOS_COST_UNITS = 5
+_PLAYLIST_NOT_FOUND_MESSAGE = "Uploads playlist not found—check the channel ID or privacy settings."
 
 
 class YouTubeLiveConnector:
@@ -218,6 +219,10 @@ class YouTubeLiveConnector:
         if not errors:
             return []
 
+        filtered_errors = {error for error in errors if error != _PLAYLIST_NOT_FOUND_MESSAGE}
+        if not filtered_errors:
+            return []
+
         summarized: Set[str] = set()
         transient_markers = {
             "Network error while contacting the YouTube API.",
@@ -225,12 +230,12 @@ class YouTubeLiveConnector:
             "Unable to refresh data from the YouTube API.",
         }
 
-        if any(error in transient_markers for error in errors):
+        if any(error in transient_markers for error in filtered_errors):
             summarized.add(
                 "Cannot reach the YouTube API right now—will retry automatically."
             )
 
-        for error in errors:
+        for error in filtered_errors:
             if error in transient_markers:
                 continue
             summarized.add(error)
@@ -742,7 +747,7 @@ class YouTubeLiveConnector:
         if status == 401:
             return "Invalid YouTube API key."
         if self._is_playlist_not_found_error(status, detail):
-            return "Uploads playlist not found—check the channel ID or privacy settings."
+            return _PLAYLIST_NOT_FOUND_MESSAGE
         if detail:
             return f"YouTube API error: {detail}"
         return f"YouTube API error (status {status})."
