@@ -164,3 +164,18 @@ def test_youtube_search_sync_handles_forbidden(monkeypatch, caplog):
         in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_playlist_not_found_message_not_surfaced():
+    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
+
+    errors = {
+        "Network error while contacting the YouTube API.",
+        "Uploads playlist not found—check the channel ID or privacy settings.",
+    }
+
+    summarized = connector._summarize_errors(errors)
+
+    assert summarized == [
+        "Cannot reach the YouTube API right now—will retry automatically.",
+    ]
