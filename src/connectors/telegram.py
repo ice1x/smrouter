@@ -8,8 +8,8 @@ from telegram import Chat, Message, constants
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application
 
-from genti.exceptions import FatalPipelineError
-from genti.models import DashboardUpdate
+from src.exceptions import FatalPipelineError
+from src.models import DashboardUpdate
 
 
 ChatId = Union[int, str]

@@ -10,7 +10,7 @@ if "aiohttp" not in sys.modules:
     )
     sys.modules["aiohttp"] = aiohttp_stub
 
-from genti.connectors.youtube import YouTubeLiveConnector
+from src.connectors.youtube import YouTubeLiveConnector
 
 
 def test_playlist_invalidation_refreshes_cache(monkeypatch, tmp_path):

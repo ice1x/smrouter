@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from genti.exceptions import FatalPipelineError
-from genti.platform import Pipeline, PipelineConfig
+from src.exceptions import FatalPipelineError
+from src.platform import Pipeline, PipelineConfig
 
 
 class DummySource:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Generic, Optional, Protocol, TypeVar
 
 
-from genti.exceptions import FatalPipelineError
+from src.exceptions import FatalPipelineError
 
 
 TSource = TypeVar("TSource")

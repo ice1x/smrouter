@@ -4,9 +4,9 @@ import pytest
 
 pytest.importorskip("telegram")
 
-from genti.models import LiveFeedState, Video
-from genti.templates import TELEGRAM_TEMPLATES
-from genti.transformations.live_dashboard import LiveDashboardTransformation
+from src.models import LiveFeedState, Video
+from src.templates import TELEGRAM_TEMPLATES
+from src.transformations.live_dashboard import LiveDashboardTransformation
 
 
 def test_transformation_builds_dashboard_and_skips_extra_messages():

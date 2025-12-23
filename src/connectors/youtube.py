@@ -19,7 +19,7 @@ from urllib import request as urllib_request
 
 import aiohttp
 
-from genti.models import LiveFeedState, Video
+from src.models import LiveFeedState, Video
 
 
 class YouTubeUploadsCache:

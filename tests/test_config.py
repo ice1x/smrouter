@@ -1,6 +1,6 @@
 import pytest
 
-from genti.config import (
+from src.config import (
     DEFAULT_MAX_CONSECUTIVE_FAILURES,
     DEFAULT_POLL_SECONDS,
     DEFAULT_SHOW_UPCOMING,

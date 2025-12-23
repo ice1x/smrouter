@@ -5,9 +5,9 @@ import pytest
 pytest.importorskip("telegram")
 from telegram.error import BadRequest
 
-from genti.connectors.telegram import TelegramDashboardConnector
-from genti.exceptions import FatalPipelineError
-from genti.models import DashboardUpdate, LiveFeedState
+from src.connectors.telegram import TelegramDashboardConnector
+from src.exceptions import FatalPipelineError
+from src.models import DashboardUpdate, LiveFeedState
 
 
 class DummyUser:
