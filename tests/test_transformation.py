@@ -41,7 +41,7 @@ def test_transformation_builds_dashboard_and_skips_extra_messages():
 
     assert TELEGRAM_TEMPLATES.dashboard_header in first_update.dashboard_text
     assert "CH\\*1\\* \\[321\\]" in first_update.dashboard_text
-    assert "\n https://youtu.be/vid1" in first_update.dashboard_text
+    assert "\n https://youtu\\.be/vid1" in first_update.dashboard_text
     assert first_update.new_live_messages == []
     assert second_update.new_live_messages == []
 
@@ -52,7 +52,7 @@ def test_transformation_handles_empty_lists():
 
     update = asyncio.run(transformation.transform(state))
     assert TELEGRAM_TEMPLATES.dashboard_header in update.dashboard_text
-    assert TELEGRAM_TEMPLATES.empty_without_errors in update.dashboard_text
+    assert "— \\(пусто\\)" in update.dashboard_text
     assert update.new_live_messages == []
 
 

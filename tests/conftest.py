@@ -41,7 +41,10 @@ def _install_telegram_stubs() -> None:
     helpers_module = types.ModuleType("telegram.helpers")
 
     def escape_markdown(text: str, *_, version: int | None = None, **__) -> str:
-        escape_chars = "\\*_[]"
+        if version == 2:
+            escape_chars = r"_*[]()~`>#+-=|{}.!"
+        else:
+            escape_chars = "\\*_[]"
         escaped = "".join(f"\\{char}" if char in escape_chars else char for char in text)
         return escaped
 

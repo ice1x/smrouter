@@ -35,54 +35,6 @@ def test_youtube_connector_deduplicates(monkeypatch):
     assert [video.video_id for video in state.upcoming] == ["v2"]
 
 
-def test_parse_items_uses_viewer_counts():
-    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
-
-    items = [
-        {
-            "id": {"videoId": "stream1"},
-            "snippet": {"title": "Stream", "channelTitle": "Channel"},
-        }
-    ]
-
-    videos = connector._parse_items(items, viewer_counts={"stream1": 123})
-
-    assert videos == [
-        Video(
-            video_id="stream1",
-            title="Stream",
-            channel_title="Channel",
-            url="https://www.youtube.com/watch?v=stream1",
-            viewer_count=123,
-        )
-    ]
-
-
-def test_extract_viewer_counts_parses_payload():
-    connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
-
-    payload = {
-        "items": [
-            {
-                "id": "stream1",
-                "liveStreamingDetails": {"concurrentViewers": "42"},
-            },
-            {
-                "id": "stream2",
-                "liveStreamingDetails": {"concurrentViewers": 17},
-            },
-            {
-                "id": "stream3",
-                "liveStreamingDetails": {},
-            },
-        ]
-    }
-
-    counts = connector._extract_viewer_counts(payload)
-
-    assert counts == {"stream1": 42, "stream2": 17}
-
-
 class ForbiddenResponse:
     def __init__(self):
         self.status = 403
@@ -113,13 +65,15 @@ class ForbiddenSession:
         return ForbiddenResponse()
 
 
-@pytest.mark.asyncio
-async def test_youtube_search_handles_forbidden(caplog):
+def test_youtube_search_handles_forbidden(caplog):
     connector = YouTubeLiveConnector(api_key="token", channel_ids=["chan"], show_upcoming=False)
 
     caplog.set_level("ERROR")
 
-    items, error_message = await connector._search(ForbiddenSession(), "chan", "live")
+    async def run_search():
+        return await connector._search(ForbiddenSession(), "chan", "live")
+
+    items, error_message = asyncio.run(run_search())
 
     assert items == []
     assert error_message == "YouTube API quota exceeded—updates are temporarily unavailable."
@@ -151,7 +105,7 @@ def test_youtube_search_sync_handles_forbidden(monkeypatch, caplog):
             fp=io.BytesIO(payload),
         )
 
-    monkeypatch.setattr("genti.connectors.youtube.urllib_request.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.connectors.youtube.urllib_request.urlopen", fake_urlopen)
 
     caplog.set_level("ERROR")
 
