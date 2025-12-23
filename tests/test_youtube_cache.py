@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from genti.connectors.youtube import YouTubeUploadsCache
+from src.connectors.youtube import YouTubeUploadsCache
 
 
 @pytest.fixture()

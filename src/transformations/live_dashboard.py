@@ -6,9 +6,9 @@ from typing import Iterable, List
 
 from telegram.helpers import escape_markdown
 
-from genti.models import DashboardUpdate, LiveFeedState, Video
-from genti.platform import TransformationStage
-from genti.templates import TELEGRAM_TEMPLATES
+from src.models import DashboardUpdate, LiveFeedState, Video
+from src.platform import TransformationStage
+from src.templates import TELEGRAM_TEMPLATES
 
 
 class LiveDashboardTransformation(TransformationStage[LiveFeedState, DashboardUpdate]):

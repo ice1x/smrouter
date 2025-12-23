@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from genti.connectors.youtube import YouTubeLiveConnector
-from genti.models import LiveFeedState, Video
+from src.connectors.youtube import YouTubeLiveConnector
+from src.models import LiveFeedState, Video
 
 
 def test_youtube_connector_deduplicates(monkeypatch):

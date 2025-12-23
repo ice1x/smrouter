@@ -10,14 +10,14 @@ from typing import Awaitable, Callable, Dict, Iterable, List
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from genti.config import ApplicationConfig, ConfigurationError, PipelineMapping, load_config
-from genti.connectors.telegram import TelegramDashboardConnector
-from genti.connectors.youtube import YouTubeLiveConnector
-from genti.exceptions import FatalPipelineError
-from genti.logging_utils import configure_logging
-from genti.platform import Pipeline, PipelineConfig
-from genti.transformations.live_dashboard import LiveDashboardTransformation
-from genti.templates import TELEGRAM_TEMPLATES
+from src.config import ApplicationConfig, ConfigurationError, PipelineMapping, load_config
+from src.connectors.telegram import TelegramDashboardConnector
+from src.connectors.youtube import YouTubeLiveConnector
+from src.exceptions import FatalPipelineError
+from src.logging_utils import configure_logging
+from src.platform import Pipeline, PipelineConfig
+from src.transformations.live_dashboard import LiveDashboardTransformation
+from src.templates import TELEGRAM_TEMPLATES
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import logging
 from io import StringIO
 
-from genti.logging_utils import configure_logging
+from src.logging_utils import configure_logging
 
 
 def test_configure_logging_redacts_tokens():
