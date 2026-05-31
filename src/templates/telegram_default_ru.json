@@ -1,0 +1,8 @@
+{
+  "start_response": "Ок! Дашборд будет поддерживаться автоматически. Закрепите этот пост, если он не закрепился сам.",
+  "unauthorized_start": "Доступ к этому боту ограничен владельцем.",
+  "initialization_message": "инициализация…",
+  "dashboard_header": "⭐️ YOUTUBE ⭐️",
+  "empty_with_errors": "— данные недоступны",
+  "empty_without_errors": "— (пусто)"
+}
