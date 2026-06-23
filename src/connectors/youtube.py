@@ -127,6 +127,12 @@ _YOUTUBE_PLAYLIST_ITEMS_COST_UNITS = 1
 _YOUTUBE_VIDEO_URL = "https://www.youtube.com/watch?v="
 _YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 _YOUTUBE_VIDEOS_COST_UNITS = 5
+# Total attempts for a single sync videos request: the initial try plus one retry.
+# Transient network blips (e.g. a momentary DNS resolution failure) are common and
+# usually clear on an immediate second attempt, so retrying once recovers the chunk
+# instead of dropping every video in it.
+_YOUTUBE_VIDEOS_SYNC_ATTEMPTS = 2
+_YOUTUBE_DNS_ERROR_MESSAGE = "Cannot resolve the YouTube API host—check the network connection."
 _PLAYLIST_NOT_FOUND_MESSAGE = "Uploads playlist not found—check the channel ID or privacy settings."
 
 
@@ -228,6 +234,7 @@ class YouTubeLiveConnector:
             "Network error while contacting the YouTube API.",
             "YouTube API request timed out.",
             "Unable to refresh data from the YouTube API.",
+            _YOUTUBE_DNS_ERROR_MESSAGE,
         }
 
         if any(error in transient_markers for error in filtered_errors):
@@ -644,50 +651,76 @@ class YouTubeLiveConnector:
                 _YOUTUBE_VIDEOS_COST_UNITS,
             )
             url = f"{_YOUTUBE_VIDEOS_URL}?{urllib_parse.urlencode(params)}"
+            payload, chunk_error = self._request_videos_sync(url, chunk)
+            if chunk_error is not None:
+                error_message = error_message or chunk_error
+                continue
+            items.extend(self._extract_video_items(payload))
+
+        return items, error_message
+
+    def _request_videos_sync(
+        self, url: str, chunk: Sequence[str]
+    ) -> Tuple[Any, str | None]:
+        """Fetch one chunk of video metadata, retrying once on transient network errors.
+
+        HTTP-level errors (auth, quota, 4xx/5xx) are not retried—they will not clear
+        on an immediate retry. Connection-level failures (DNS, timeouts, refused
+        connections) are retried once before giving up.
+        """
+        chunk_label = ",".join(chunk)
+        error_message: str | None = None
+        for attempt in range(1, _YOUTUBE_VIDEOS_SYNC_ATTEMPTS + 1):
             request = urllib_request.Request(url)
             try:
                 with urllib_request.urlopen(request, timeout=20) as response:
-                    payload = json.load(response)
+                    return json.load(response), None
             except urllib_error.HTTPError as exc:
                 detail = self._extract_error_detail_sync(exc)
                 self._logger.warning(
                     "YouTube videos failed with %s for ids=%s cost=%s units: %s",
                     exc.code,
-                    ",".join(chunk),
+                    chunk_label,
                     _YOUTUBE_VIDEOS_COST_UNITS,
                     detail,
                 )
-                error_message = error_message or self._user_error_message(exc.code, detail)
-                continue
+                return None, self._user_error_message(exc.code, detail)
             except urllib_error.URLError as exc:
-                reason = exc.reason
-                if isinstance(reason, (TimeoutError, socket.timeout)):
-                    self._logger.warning(
-                        "YouTube videos timed out: ids=%s cost=%s units",
-                        ",".join(chunk),
-                        _YOUTUBE_VIDEOS_COST_UNITS,
-                    )
-                    error_message = error_message or "YouTube API request timed out."
-                else:
-                    self._logger.exception(
-                        "YouTube videos failed: ids=%s cost=%s units",
-                        ",".join(chunk),
-                        _YOUTUBE_VIDEOS_COST_UNITS,
-                    )
-                    error_message = error_message or "Network error while contacting the YouTube API."
-                continue
-            except (TimeoutError, socket.timeout):
+                description, error_message = self._describe_sync_network_error(exc.reason)
+            except (TimeoutError, socket.timeout) as exc:
+                description, error_message = self._describe_sync_network_error(exc)
+
+            if attempt < _YOUTUBE_VIDEOS_SYNC_ATTEMPTS:
                 self._logger.warning(
-                    "YouTube videos timed out: ids=%s cost=%s units",
-                    ",".join(chunk),
+                    "YouTube videos %s for ids=%s cost=%s units (attempt %s/%s); retrying",
+                    description,
+                    chunk_label,
                     _YOUTUBE_VIDEOS_COST_UNITS,
+                    attempt,
+                    _YOUTUBE_VIDEOS_SYNC_ATTEMPTS,
                 )
-                error_message = error_message or "YouTube API request timed out."
-                continue
+            else:
+                self._logger.warning(
+                    "YouTube videos %s for ids=%s cost=%s units (attempt %s/%s); giving up",
+                    description,
+                    chunk_label,
+                    _YOUTUBE_VIDEOS_COST_UNITS,
+                    attempt,
+                    _YOUTUBE_VIDEOS_SYNC_ATTEMPTS,
+                )
 
-            items.extend(self._extract_video_items(payload))
+        return None, error_message
 
-        return items, error_message
+    def _describe_sync_network_error(self, reason: Any) -> Tuple[str, str]:
+        """Map a connection-level failure to a (log description, user message) pair."""
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return "timed out", "YouTube API request timed out."
+        if isinstance(reason, socket.gaierror):
+            return f"DNS lookup failed ({reason})", _YOUTUBE_DNS_ERROR_MESSAGE
+        return (
+            f"network error ({reason})",
+            "Network error while contacting the YouTube API.",
+        )
 
     async def _extract_error_detail(self, response: aiohttp.ClientResponse) -> str:
         try:
