@@ -123,6 +123,52 @@ def _build_failure_state(managed_pipelines: Iterable[ManagedPipeline]) -> Dict[s
     return {pipeline.mapping.telegram_channel_id: 0 for pipeline in managed_pipelines}
 
 
+async def _run_application(
+    application,
+    scheduler_task,
+    stop_event: asyncio.Event,
+    *,
+    telegram_updates_poll_interval: float,
+    telegram_updates_timeout: float,
+) -> None:
+    """Start the application, wait for shutdown, then tear it down cleanly.
+
+    The cleanup block only stops components that were actually started. If
+    startup fails (e.g. a network timeout in ``initialize()``), calling
+    ``updater.stop()`` / ``application.stop()`` on never-started components
+    raises ``RuntimeError: ... is not running!`` and would mask the original
+    error, so those calls are guarded by their ``running`` state. ``shutdown()``
+    is always safe and always runs to release resources.
+    """
+
+    try:
+        await application.initialize()
+        await application.start()
+
+        if application.updater is not None:
+            await application.updater.start_polling(
+                poll_interval=telegram_updates_poll_interval,
+                timeout=telegram_updates_timeout,
+            )
+
+        await stop_event.wait()
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler_task
+
+        if application.updater is not None and getattr(application.updater, "running", False):
+            with suppress(RuntimeError):
+                await application.updater.stop()
+
+        if getattr(application, "running", False):
+            with suppress(RuntimeError):
+                await application.stop()
+
+        await application.shutdown()
+
+
 async def main(config_path: str | None = None) -> None:
     try:
         config = load_config(config_path)
@@ -214,28 +260,13 @@ async def main(config_path: str | None = None) -> None:
 
         scheduler_task = asyncio.create_task(scheduler_loop())
 
-    try:
-        await application.initialize()
-        await application.start()
-
-        if application.updater is not None:
-            await application.updater.start_polling(
-                poll_interval=config.telegram_updates_poll_interval,
-                timeout=config.telegram_updates_timeout,
-            )
-
-        await stop_event.wait()
-    finally:
-        if scheduler_task is not None:
-            scheduler_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await scheduler_task
-
-        if application.updater is not None:
-            await application.updater.stop()
-
-        await application.stop()
-        await application.shutdown()
+    await _run_application(
+        application,
+        scheduler_task,
+        stop_event,
+        telegram_updates_poll_interval=config.telegram_updates_poll_interval,
+        telegram_updates_timeout=config.telegram_updates_timeout,
+    )
 
 
 if __name__ == "__main__":
