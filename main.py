@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Iterable, List
 
 from telegram import Update
+from telegram.error import NetworkError
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from src.config import ApplicationConfig, ConfigurationError, PipelineMapping, load_config
@@ -20,6 +21,14 @@ from src.transformations.live_dashboard import LiveDashboardTransformation
 from src.templates import TELEGRAM_TEMPLATES
 
 logger = logging.getLogger(__name__)
+
+# Telegram can be briefly unreachable at startup (DNS not ready, TLS connect
+# timeouts while the network comes up). ``initialize()`` reaches the API
+# (``get_me``) and is the first thing to fail in that case. Retry it a bounded
+# number of times with a fixed backoff; a transient NetworkError usually clears.
+# Auth/token errors are not NetworkError, so they propagate immediately.
+_TELEGRAM_STARTUP_ATTEMPTS = 5
+_TELEGRAM_STARTUP_BACKOFF_SECONDS = 5.0
 
 
 @dataclass
@@ -123,6 +132,45 @@ def _build_failure_state(managed_pipelines: Iterable[ManagedPipeline]) -> Dict[s
     return {pipeline.mapping.telegram_channel_id: 0 for pipeline in managed_pipelines}
 
 
+async def _initialize_with_retry(
+    application,
+    *,
+    attempts: int = _TELEGRAM_STARTUP_ATTEMPTS,
+    backoff: float = _TELEGRAM_STARTUP_BACKOFF_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Initialize the application, retrying transient Telegram network errors.
+
+    ``initialize()`` calls ``get_me`` against the Telegram API; at startup that
+    connection can time out while the network is still coming up. Such a
+    ``NetworkError`` (``TimedOut`` is a subclass) usually clears on a retry, so
+    we retry up to ``attempts`` times with a fixed ``backoff`` between tries.
+    Non-network errors (e.g. an invalid token) are not retried — they will not
+    clear on a second attempt — and propagate immediately.
+    """
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await application.initialize()
+            return
+        except NetworkError as exc:
+            if attempt >= attempts:
+                logger.error(
+                    "Telegram initialize failed after %s attempt(s): %s; giving up",
+                    attempts,
+                    exc,
+                )
+                raise
+            logger.warning(
+                "Telegram initialize network error (attempt %s/%s): %s; retrying in %.1fs",
+                attempt,
+                attempts,
+                exc,
+                backoff,
+            )
+            await sleep(backoff)
+
+
 async def _run_application(
     application,
     scheduler_task,
@@ -130,6 +178,9 @@ async def _run_application(
     *,
     telegram_updates_poll_interval: float,
     telegram_updates_timeout: float,
+    startup_attempts: int = _TELEGRAM_STARTUP_ATTEMPTS,
+    startup_backoff: float = _TELEGRAM_STARTUP_BACKOFF_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Start the application, wait for shutdown, then tear it down cleanly.
 
@@ -142,7 +193,12 @@ async def _run_application(
     """
 
     try:
-        await application.initialize()
+        await _initialize_with_retry(
+            application,
+            attempts=startup_attempts,
+            backoff=startup_backoff,
+            sleep=sleep,
+        )
         await application.start()
 
         if application.updater is not None:

@@ -27,9 +27,18 @@ def _install_telegram_stubs() -> None:
             super().__init__(message)
             self.message = message
 
+    class NetworkError(TelegramError):
+        ...
+
+    class TimedOut(NetworkError):
+        def __init__(self, message: str = "Timed out"):
+            super().__init__(message)
+
     error_module = types.ModuleType("telegram.error")
     error_module.BadRequest = BadRequest
     error_module.TelegramError = TelegramError
+    error_module.NetworkError = NetworkError
+    error_module.TimedOut = TimedOut
 
     constants_module = types.ModuleType("telegram.constants")
 
